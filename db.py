@@ -132,6 +132,15 @@ def init_db():
     );
     """)
     db.commit()
+    _migrate()
+
+
+def _migrate():
+    db = get_db()
+    cols = [row[1] for row in db.execute("PRAGMA table_info(notifications)").fetchall()]
+    if "dm_sent" not in cols:
+        db.execute("ALTER TABLE notifications ADD COLUMN dm_sent INTEGER DEFAULT 0")
+        db.commit()
 
 
 # --- User helpers ---
@@ -322,6 +331,18 @@ def get_notifications(discord_id, limit=None):
         q += " LIMIT ?"
         params.append(limit)
     return get_db().execute(q, params).fetchall()
+
+
+def get_pending_dm_notifications(limit=20):
+    return get_db().execute(
+        "SELECT * FROM notifications WHERE dm_sent=0 ORDER BY created_at ASC LIMIT ?",
+        (limit,)
+    ).fetchall()
+
+
+@write_db
+def mark_notification_dm_sent(notif_id):
+    get_db().execute("UPDATE notifications SET dm_sent=1 WHERE id=?", (notif_id,))
 
 
 # --- Sync log ---

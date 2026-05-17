@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import auth
+import bot
 import db
 import render
 
@@ -442,6 +443,7 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     db.init_db()
+    bot.start()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"SC Community SHOWER")
     print(f"  SHOpfront, Workorder and Exchange Register")
