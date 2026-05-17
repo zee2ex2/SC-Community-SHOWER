@@ -10,17 +10,18 @@ REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI", "http://localhost:9200/aut
 GUILD_ID = os.environ.get("DISCORD_GUILD_ID", "")
 SESSION_TTL = 86400 * 7
 
-SCOPES = "identify guilds.members.read"
-
-
 def auth_url():
-    params = urllib.parse.urlencode({
+    params = {
         "client_id": CLIENT_ID,
         "redirect_uri": REDIRECT_URI,
         "response_type": "code",
-        "scope": SCOPES,
-    })
-    return f"https://discord.com/api/oauth2/authorize?{params}"
+    }
+    if GUILD_ID:
+        params["scope"] = "identify guilds.members.read"
+        params["guild_id"] = GUILD_ID
+    else:
+        params["scope"] = "identify"
+    return f"https://discord.com/api/oauth2/authorize?{urllib.parse.urlencode(params)}"
 
 
 def exchange_code(code):

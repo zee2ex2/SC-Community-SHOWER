@@ -349,14 +349,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         state = secrets.token_hex(16)
         _jock_oauth_states[state] = redirect_uri
-        params = urllib.parse.urlencode({
+        oauth_params = {
             "client_id": auth.CLIENT_ID,
             "redirect_uri": auth.REDIRECT_URI,
             "response_type": "code",
-            "scope": auth.SCOPES,
             "state": state,
-        })
-        self.redirect(f"https://discord.com/api/oauth2/authorize?{params}")
+        }
+        if auth.GUILD_ID:
+            oauth_params["scope"] = "identify guilds.members.read"
+            oauth_params["guild_id"] = auth.GUILD_ID
+        else:
+            oauth_params["scope"] = "identify"
+        self.redirect(f"https://discord.com/api/oauth2/authorize?{urllib.parse.urlencode(oauth_params)}")
 
     def _handle_callback(self, qs):
         code = qs.get("code", "")
