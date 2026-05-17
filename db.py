@@ -130,6 +130,14 @@ def init_db():
         created_at TEXT DEFAULT (datetime('now')),
         FOREIGN KEY (discord_id) REFERENCES users(discord_id)
     );
+
+    CREATE TABLE IF NOT EXISTS client_tokens (
+        token TEXT PRIMARY KEY,
+        discord_id TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        expires_at TEXT NOT NULL,
+        FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+    );
     """)
     db.commit()
     _migrate()
@@ -223,6 +231,39 @@ def get_api_keys(discord_id):
     return get_db().execute(
         "SELECT key, label, last_used, expires_at, created_at FROM api_keys WHERE discord_id=? ORDER BY created_at DESC",
         (discord_id,)).fetchall()
+
+
+# --- Client Tokens ---
+
+@write_db
+def create_client_token(discord_id, expires_in_days=30):
+    from datetime import datetime, timedelta
+    import secrets
+    token = secrets.token_hex(32)
+    expires_at = (datetime.utcnow() + timedelta(days=expires_in_days)).strftime("%Y-%m-%dT%H:%M:%S")
+    db = get_db()
+    db.execute("INSERT INTO client_tokens (token, discord_id, expires_at) VALUES (?, ?, ?)",
+               (token, discord_id, expires_at))
+    return token, expires_at
+
+
+def get_user_by_client_token(token):
+    db = get_db()
+    return db.execute("""SELECT u.* FROM users u
+        JOIN client_tokens t ON u.discord_id = t.discord_id
+        WHERE t.token=? AND t.expires_at > datetime('now')""",
+        (token,)).fetchone()
+
+
+def get_client_tokens(discord_id):
+    return get_db().execute(
+        "SELECT token, created_at, expires_at FROM client_tokens WHERE discord_id=? ORDER BY created_at DESC",
+        (discord_id,)).fetchall()
+
+
+@write_db
+def revoke_client_token(token):
+    get_db().execute("DELETE FROM client_tokens WHERE token=?", (token,))
 
 
 # --- Inventory ---

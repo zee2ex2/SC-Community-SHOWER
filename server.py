@@ -18,6 +18,8 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "9200"))
 BASE_DIR = Path(__file__).resolve().parent
 
+_jock_oauth_states = {}
+
 
 def esc(val):
     if val is None:
@@ -60,7 +62,12 @@ class Handler(BaseHTTPRequestHandler):
         auth_header = self.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             key = auth_header[7:]
-            return db.get_user_by_api_key(key)
+            user = db.get_user_by_api_key(key)
+            if user:
+                return user
+            user = db.get_user_by_client_token(key)
+            if user:
+                return user
         return None
 
     def _get_request_user(self):
@@ -102,6 +109,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/auth/login":
             url = auth.auth_url()
             self.redirect(url)
+            return
+
+        if path == "/auth/jock-login":
+            self._handle_jock_login(qs)
             return
 
         if path == "/auth/callback":
@@ -307,6 +318,16 @@ class Handler(BaseHTTPRequestHandler):
             self.respond_json({"status": "ok"})
             return
 
+        if path == "/api/auth/revoke" and method == "POST":
+            if not user:
+                self.respond_json({"error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                db.revoke_client_token(auth_header[7:])
+            self.respond_json({"status": "ok"})
+            return
+
         self.respond_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def _check_order_match(self, discord_id, item_name, quality):
@@ -321,9 +342,26 @@ class Handler(BaseHTTPRequestHandler):
                         "order",
                     )
 
+    def _handle_jock_login(self, qs):
+        redirect_uri = qs.get("redirect_uri", "")
+        if not redirect_uri:
+            self.respond("Missing redirect_uri", HTTPStatus.BAD_REQUEST)
+            return
+        state = secrets.token_hex(16)
+        _jock_oauth_states[state] = redirect_uri
+        params = urllib.parse.urlencode({
+            "client_id": auth.CLIENT_ID,
+            "redirect_uri": auth.REDIRECT_URI,
+            "response_type": "code",
+            "scope": auth.SCOPES,
+            "state": state,
+        })
+        self.redirect(f"https://discord.com/api/oauth2/authorize?{params}")
+
     def _handle_callback(self, qs):
         code = qs.get("code", "")
         error = qs.get("error", "")
+        state = qs.get("state", "")
         if error or not code:
             self.respond(f"<h1>Auth Error</h1><p>{esc(error)}</p>")
             return
@@ -351,6 +389,22 @@ class Handler(BaseHTTPRequestHandler):
         avatar = user_data.get("avatar", "")
         db.upsert_user(discord_id, discord_tag, username, avatar, access_token, refresh_token,
                        token_data.get("expires_in", 0), role_ids, is_admin)
+
+        if state in _jock_oauth_states:
+            redirect_uri = _jock_oauth_states.pop(state)
+            client_token, expires_at = db.create_client_token(discord_id)
+            params = urllib.parse.urlencode({
+                "token": client_token,
+                "discord_tag": discord_tag,
+                "discord_id": discord_id,
+                "guild_verified": "1" if member_data else "0",
+                "guild_roles": role_ids,
+                "expires_at": expires_at,
+            })
+            sep = "&" if "?" in redirect_uri else "?"
+            self.redirect(f"{redirect_uri}{sep}{params}")
+            return
+
         session_id = secrets.token_hex(32)
         db.create_session(session_id, discord_id, auth.SESSION_TTL)
         self.send_response(HTTPStatus.SEE_OTHER)
