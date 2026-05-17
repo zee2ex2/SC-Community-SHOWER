@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+shower_data/
+.env
