@@ -5,12 +5,6 @@ on:
     branches: [master]
   workflow_dispatch:
 
-env:
-  AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME || secrets.AZURE_WEBAPP_NAME }}
-  REGISTRY_URL: ${{ vars.REGISTRY_URL || secrets.REGISTRY_URL }}
-  IMAGE_NAME: shower
-  IMAGE_TAG: ${{ github.sha }}
-
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
@@ -18,27 +12,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Log in to Azure Container Registry
+      - name: Build and push Docker image
         uses: azure/docker-login@v2
         with:
-          login-server: ${{ env.REGISTRY_URL }}
+          login-server: ${{ vars.REGISTRY_URL }}
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
-      - name: Build and push Docker image
-        run: |
-          docker build -t $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG .
-          docker tag $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG $REGISTRY_URL/$IMAGE_NAME:latest
-          docker push $REGISTRY_URL/$IMAGE_NAME:$IMAGE_TAG
-          docker push $REGISTRY_URL/$IMAGE_NAME:latest
-
-      - name: Azure Login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - run: |
+          docker build -t ${{ vars.REGISTRY_URL }}/shower:${{ github.sha }} .
+          docker tag ${{ vars.REGISTRY_URL }}/shower:${{ github.sha }} ${{ vars.REGISTRY_URL }}/shower:latest
+          docker push ${{ vars.REGISTRY_URL }}/shower:${{ github.sha }}
+          docker push ${{ vars.REGISTRY_URL }}/shower:latest
 
       - name: Deploy to Azure App Service
-        uses: azure/webapps-deploy@v3
+        uses: azure/webapps-deploy@v2
         with:
-          app-name: ${{ env.AZURE_WEBAPP_NAME }}
-          images: ${{ env.REGISTRY_URL }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          images: ${{ vars.REGISTRY_URL }}/shower:${{ github.sha }}
