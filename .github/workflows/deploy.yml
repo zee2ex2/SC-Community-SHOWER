@@ -36,8 +36,8 @@ jobs:
           az webapp config container set \
             --name ${{ vars.AZURE_WEBAPP_NAME }} \
             --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
-            --docker-custom-image-name ${{ vars.REGISTRY_URL }}/shower:${{ github.sha }} \
-            --docker-registry-server-url https://${{ vars.REGISTRY_URL }} \
-            --docker-registry-server-user ${{ secrets.REGISTRY_USERNAME }} \
-            --docker-registry-server-password ${{ secrets.REGISTRY_PASSWORD }}
+            --container-image-name ${{ vars.REGISTRY_URL }}/shower:${{ github.sha }} \
+            --container-registry-url https://${{ vars.REGISTRY_URL }} \
+            --container-registry-user ${{ secrets.REGISTRY_USERNAME }} \
+            --container-registry-password ${{ secrets.REGISTRY_PASSWORD }}
           az webapp restart --name ${{ vars.AZURE_WEBAPP_NAME }} --resource-group ${{ vars.AZURE_RESOURCE_GROUP }}
