@@ -9,6 +9,7 @@ import db
 DISCORD_API = "https://discord.com/api/v10"
 BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
 POLL_INTERVAL = int(os.environ.get("BOT_POLL_INTERVAL", "30"))
+_USER_AGENT = "SC-Community/0.1.0 (https://github.com/sc-pits; v0.1.0-alpha)"
 
 
 def send_dm(discord_id, title, body):
@@ -19,6 +20,7 @@ def send_dm(discord_id, title, body):
         headers={
             "Authorization": f"Bot {BOT_TOKEN}",
             "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
         },
         method="POST",
     )

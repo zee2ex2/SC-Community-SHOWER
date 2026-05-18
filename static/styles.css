@@ -1,12 +1,16 @@
 :root {
   color-scheme: dark;
-  --bg: #121212;
-  --panel: #1e1e1e;
-  --text: #e1e1e1;
-  --muted: #949494;
-  --line: #333;
-  --accent: #2a9d8f;
-  --accent-dark: #21867a;
+  --bg: #050505;
+  --panel: #1b1b1b;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --line: rgba(255,255,255,0.08);
+  --accent: #a92a28;
+  --accent-dark: #8a1f1d;
+  --blue: #2196f3;
+  --blue-dark: #1976d2;
+  --green: #2ea85c;
+  --green-dark: #238a4a;
   --slider-accent: #2196f3;
   --slider-accent-dark: #1976d2;
   --danger: #ef5350;
@@ -15,9 +19,9 @@
   --hold-bg: #3d2e14;
   --confirm-bg: #1a2a4a;
   --danger-bg: #3d1a1a;
-  --note-bg: #2a2a2a;
-  --shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-  --input-bg: #2a2a2a;
+  --note-bg: #242424;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --input-bg: #242424;
   --ghost-bg: transparent;
   --ghost-text: var(--accent);
 }
@@ -29,8 +33,12 @@
   --text: #1f2933;
   --muted: #687586;
   --line: #d9e0e8;
-  --accent: #136f63;
-  --accent-dark: #0d5149;
+  --accent: #1A4D6E;
+  --accent-dark: #0f3650;
+  --blue: #2196f3;
+  --blue-dark: #1976d2;
+  --green: #2ea85c;
+  --green-dark: #238a4a;
   --slider-accent: #2196f3;
   --slider-accent-dark: #1976d2;
   --danger: #b42318;
@@ -90,7 +98,20 @@ body {
 main {
   margin: 0 auto;
   max-width: 1440px;
-  padding: 24px clamp(18px, 4vw, 44px) 48px;
+  padding: 24px clamp(18px, 4vw, 44px) 4px;
+}
+
+::placeholder {
+  color: rgba(255,255,255,0.35);
+}
+
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type=number] {
+  -moz-appearance: textfield;
 }
 
 .messages {
@@ -137,6 +158,13 @@ main {
 
 .metric {
   padding: 18px;
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+
+.metric:hover {
+  border-color: var(--accent);
 }
 
 .metric span {
@@ -151,7 +179,17 @@ main {
 
 .panel {
   margin-top: 18px;
-  padding: 18px;
+  padding: 18px 18px 10px;
+}
+
+.stats-panel {
+  background: var(--accent);
+}
+.stats-panel .stat-value {
+  color: #fff;
+}
+.stats-panel .stat-label {
+  color: rgba(255,255,255,0.7);
 }
 
 .section-heading {
@@ -226,6 +264,19 @@ button:hover,
   color: var(--ghost-text);
 }
 
+.button.blue {
+  background: var(--blue);
+}
+.button.blue:hover {
+  background: var(--blue-dark);
+}
+.button.green {
+  background: var(--green);
+}
+.button.green:hover {
+  background: var(--green-dark);
+}
+
 .theme-toggle {
   background: none;
   border: 1px solid var(--line);
@@ -265,23 +316,23 @@ button:hover,
 .pill.ok,
 .pill.completed {
   background: var(--ok-bg);
-  color: var(--accent);
+  color: #fff;
 }
 
 .pill.hold,
 .pill.pending {
   background: var(--hold-bg);
-  color: var(--warning);
+  color: #fff;
 }
 
 .pill.confirmed {
   background: var(--confirm-bg);
-  color: #64b5f6;
+  color: #fff;
 }
 
 .pill.cancelled {
   background: var(--danger-bg);
-  color: var(--danger);
+  color: #fff;
 }
 
 .muted,
@@ -344,8 +395,19 @@ button:hover,
 
 .nav-links {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+.nav-links .button,
+.nav-links .button.ghost {
+  background: var(--accent);
+  color: #fff;
+}
+.nav-links .button:hover,
+.nav-links .button.ghost:hover {
+  background: var(--accent-dark);
+  color: #fff;
 }
 
 .manage-form {
@@ -361,7 +423,8 @@ button:hover,
   display: flex;
   gap: 6px;
   align-items: center;
-  min-width: 420px;
+  justify-content: flex-end;
+  white-space: nowrap;
 }
 
 .cell-actions form {
@@ -481,6 +544,11 @@ button:hover,
 
 .suggestion-item:last-child {
   border-radius: 0 0 7px 7px;
+}
+
+.suggestion-item.highlighted {
+  background: var(--accent);
+  color: #fff;
 }
 
 .icon-btn {
@@ -722,6 +790,15 @@ input[type="range"]::-moz-range-thumb {
   .button {
     width: 100%;
   }
+
+  .nav-links .button {
+    width: auto;
+  }
+
+  .cell-actions button,
+  .cell-actions .button {
+    width: auto;
+  }
 }
 
 .modal-overlay {
@@ -814,6 +891,8 @@ input[type="range"]::-moz-range-thumb {
 
 .dropdown-toggle {
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
 }
 
 .dropdown-menu {
@@ -965,4 +1044,15 @@ input[type="range"]::-moz-range-thumb {
 .notif-btn.danger:hover {
   background: var(--danger);
   color: #fff;
+}
+
+.footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 0 auto;
+  max-width: 1440px;
+  padding: 16px clamp(18px, 4vw, 44px);
+  font-size: 12px;
+  color: var(--accent);
 }

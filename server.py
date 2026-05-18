@@ -9,10 +9,21 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# Load .env file before any module imports that read env vars
+env_path = Path(__file__).resolve().parent / '.env'
+if env_path.exists():
+    for line in env_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, _, val = line.partition('=')
+        os.environ.setdefault(key.strip(), val.strip())
+
 import auth
 import bot
 import db
 import render
+import ws_server
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "9200"))
@@ -100,6 +111,10 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_static(BASE_DIR / "static" / "styles.css", "text/css; charset=utf-8")
             return
 
+        if path == "/static/shower.js":
+            self.serve_static(BASE_DIR / "static" / "shower.js", "application/javascript; charset=utf-8")
+            return
+
         if path.startswith("/api/"):
             self._handle_api(method, path, qs, data)
             return
@@ -123,13 +138,38 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_logout(qs)
             return
 
+        if user and (db.is_banned(user["discord_id"]) or db.get_user_role_level(user["discord_id"]) == 0):
+            db.delete_user_sessions(user["discord_id"])
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", "/")
+            self.send_header("Set-Cookie", "session_id=; SameSite=Lax; Path=/; Max-Age=0")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+
+        if user:
+            db.update_last_seen(user["discord_id"])
+
         if path == "/" or path == "/dashboard":
-            body = render.dashboard(user, db)
+            body = render.dashboard(user, db, qs)
+            self.respond(body)
+            return
+
+        if path == "/api-keys":
+            body = render.api_keys_page(user, db)
             self.respond(body)
             return
 
         if path == "/inventory":
             body = render.inventory_browse(user, db, qs)
+            self.respond(body)
+            return
+
+        if path == "/my-inventory":
+            if not user:
+                self.respond("Login required", HTTPStatus.UNAUTHORIZED)
+                return
+            body = render.my_inventory_page(user, db, qs)
             self.respond(body)
             return
 
@@ -153,9 +193,68 @@ class Handler(BaseHTTPRequestHandler):
             self.redirect("/orders")
             return
 
+        if path == "/admin":
+            if not user:
+                self.respond("Login required", HTTPStatus.UNAUTHORIZED)
+                return
+            level = db.get_user_role_level(user["discord_id"])
+            if level < 2:
+                self.respond("Access denied", HTTPStatus.FORBIDDEN)
+                return
+            if method == "POST":
+                self._handle_admin_post(user, data)
+                return
+            body = render.admin_page(user, db, qs)
+            self.respond(body)
+            return
+
         if path == "/notifications":
             body = render.notifications_page(user, db)
             self.respond(body)
+            return
+
+        if path == "/my-inventory/add" and method == "POST":
+            if not user:
+                self.respond("<h1>Not logged in</h1>", HTTPStatus.UNAUTHORIZED)
+                return
+            item_name = data.get("item_name", "").strip()
+            quality = int(data.get("quality", 100))
+            quantity = float(data.get("quantity_scu", 1.0))
+            station = data.get("station", "").strip()
+            if not item_name:
+                self.redirect("/my-inventory?error=missing_name")
+                return
+            row_id, err = db.add_my_inventory(user["discord_id"], item_name, quality, quantity, station)
+            if err:
+                self.redirect(f"/my-inventory?error={urllib.parse.quote(err)}")
+                return
+            self._push_to_pits(user, "add", {
+                "item_name": item_name,
+                "quality": quality,
+                "quantity_scu": quantity,
+                "station": station,
+            })
+            self.redirect("/my-inventory?created=1")
+            return
+
+        if path == "/my-inventory/delete" and method == "POST":
+            if not user:
+                self.respond("<h1>Not logged in</h1>", HTTPStatus.UNAUTHORIZED)
+                return
+            inv_id = data.get("inv_id", "")
+            if not inv_id:
+                self.redirect("/my-inventory?error=missing_id")
+                return
+            item = db.get_inventory_item(user["discord_id"], inv_id)
+            if item:
+                self._push_to_pits(user, "delete", {
+                    "item_name": item["item_name"],
+                    "quality": item["quality"],
+                    "quantity_scu": item["quantity_scu"],
+                    "station": item["station"] or "",
+                })
+            db.delete_inventory_item(user["discord_id"], inv_id)
+            self.redirect("/my-inventory?deleted=1")
             return
 
         self.respond("Not found", HTTPStatus.NOT_FOUND)
@@ -175,7 +274,10 @@ class Handler(BaseHTTPRequestHandler):
             if not item_name:
                 self.respond_json({"error": "Missing item_name"}, HTTPStatus.BAD_REQUEST)
                 return
-            db.sync_inventory(discord_id, item_name, quality, quantity_scu, station)
+            result = db.sync_inventory(discord_id, item_name, quality, quantity_scu, station)
+            if not result.get("ok"):
+                self.respond_json({"error": result.get("error", "Sync rejected")}, HTTPStatus.BAD_REQUEST)
+                return
             db.log_sync(discord_id, "push", "ok", f"Synced {item_name} Q{quality} x{quantity_scu}")
             self._check_order_match(discord_id, item_name, quality)
             self.respond_json({"status": "ok"})
@@ -186,13 +288,23 @@ class Handler(BaseHTTPRequestHandler):
                 self.respond_json({"error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED)
                 return
             discord_id = user["discord_id"]
-            inventory_id = data.get("inventory_id", "")
-            if not inventory_id:
-                self.respond_json({"error": "Missing inventory_id"}, HTTPStatus.BAD_REQUEST)
+            item_name = data.get("item_name", "")
+            quality = int(data.get("quality", 100))
+            quantity_scu = float(data.get("quantity_scu", 0))
+            station = data.get("station", "")
+            if not item_name:
+                self.respond_json({"error": "Missing item_name"}, HTTPStatus.BAD_REQUEST)
                 return
-            db.delete_inventory_item(discord_id, inventory_id)
-            db.log_sync(discord_id, "push", "ok", f"Deleted inventory item {inventory_id}")
-            self.respond_json({"status": "ok"})
+            row = db.get_db().execute(
+                "SELECT id FROM community_inventory WHERE discord_id=? AND item_name=? AND quality=? AND station=?",
+                (discord_id, item_name, quality, station)
+            ).fetchone()
+            if row:
+                db.delete_inventory_item(discord_id, row["id"])
+                db.log_sync(discord_id, "push", "ok", f"Deleted {item_name}")
+                self.respond_json({"status": "ok"})
+            else:
+                self.respond_json({"error": "No matching inventory found"}, HTTPStatus.NOT_FOUND)
             return
 
         if path == "/api/inventory/sync" and method == "GET":
@@ -328,6 +440,24 @@ class Handler(BaseHTTPRequestHandler):
             self.respond_json({"status": "ok"})
             return
 
+        if path == "/api/autocomplete/items" and method == "GET":
+            prefix = qs.get("q", "")
+            if not prefix:
+                self.respond_json([])
+                return
+            results = db.get_item_autocomplete(prefix)
+            self.respond_json(results)
+            return
+
+        if path == "/api/autocomplete/stations" and method == "GET":
+            prefix = qs.get("q", "")
+            if not prefix:
+                self.respond_json([])
+                return
+            results = db.get_station_autocomplete(prefix)
+            self.respond_json(results)
+            return
+
         self.respond_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
     def _check_order_match(self, discord_id, item_name, quality):
@@ -342,24 +472,42 @@ class Handler(BaseHTTPRequestHandler):
                         "order",
                     )
 
+    def _push_to_pits(self, user, action, data):
+        item_name = data.get("item_name", "")
+        station = data.get("station", "")
+        itemid = ""
+        stationid = ""
+        if item_name:
+            row = db.get_db().execute("SELECT id FROM items WHERE name=?", (item_name,)).fetchone()
+            if row: itemid = str(row["id"])
+        if station:
+            row = db.get_db().execute("SELECT id FROM stations WHERE name=?", (station,)).fetchone()
+            if row: stationid = str(row["id"])
+        msg = {"type": "push_inventory", "action": action,
+               "itemid": itemid, "item_name": item_name,
+               "quality": data.get("quality", ""),
+               "quantity_scu": data.get("quantity_scu", ""),
+               "stationid": stationid, "station": station}
+        sent = ws_server.send(user["discord_id"], msg)
+        if not sent:
+            print(f"[push] No WS connection for {user['discord_id']}", flush=True)
+
     def _handle_jock_login(self, qs):
         redirect_uri = qs.get("redirect_uri", "")
         if not redirect_uri:
             self.respond("Missing redirect_uri", HTTPStatus.BAD_REQUEST)
             return
         state = secrets.token_hex(16)
-        _jock_oauth_states[state] = redirect_uri
+        pu = urllib.parse.urlparse(redirect_uri)
+        pits_url = f"{pu.scheme}://{pu.netloc}"
+        _jock_oauth_states[state] = {"redirect_uri": redirect_uri, "pits_url": pits_url}
         oauth_params = {
             "client_id": auth.CLIENT_ID,
             "redirect_uri": auth.REDIRECT_URI,
             "response_type": "code",
+            "scope": "identify",
             "state": state,
         }
-        if auth.GUILD_ID:
-            oauth_params["scope"] = "identify guilds.members.read"
-            oauth_params["guild_id"] = auth.GUILD_ID
-        else:
-            oauth_params["scope"] = "identify"
         self.redirect(f"https://discord.com/api/oauth2/authorize?{urllib.parse.urlencode(oauth_params)}")
 
     def _handle_callback(self, qs):
@@ -380,33 +528,51 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(f"<h1>User Error</h1><p>{esc(err)}</p>")
             return
         member_data, m_err = auth.get_guild_member(access_token)
+        if m_err:
+            print(f"[server] guild member lookup failed: {m_err}", flush=True)
         role_ids = ""
         is_admin = False
+        display_name = None
         if member_data:
             role_ids = ",".join(member_data.get("roles", []))
             admin_role = os.environ.get("DISCORD_ADMIN_ROLE", "")
             if admin_role:
                 is_admin = admin_role in role_ids
+            nick = member_data.get("nick")
+            if nick:
+                display_name = nick
         discord_id = user_data["id"]
         discord_tag = f"{user_data['username']}#{user_data.get('discriminator', '0')}"
         username = user_data.get("username", "")
+        if not display_name:
+            display_name = username
         avatar = user_data.get("avatar", "")
-        db.upsert_user(discord_id, discord_tag, username, avatar, access_token, refresh_token,
+        db.upsert_user(discord_id, discord_tag, username, display_name, avatar, access_token, refresh_token,
                        token_data.get("expires_in", 0), role_ids, is_admin)
 
+        if db.is_banned(discord_id) or db.get_user_role_level(discord_id) == 0:
+            self.respond("<h1>Access Denied</h1><p>Your account has been banned from this SHOWER server.</p>", HTTPStatus.FORBIDDEN)
+            return
+
         if state in _jock_oauth_states:
-            redirect_uri = _jock_oauth_states.pop(state)
-            client_token, expires_at = db.create_client_token(discord_id)
+            state_data = _jock_oauth_states.pop(state)
+            redirect_uri = state_data["redirect_uri"]
+            pits_url = state_data.get("pits_url", "")
+            auth_code = secrets.token_hex(8)
+            ws_server.add_auth_code(auth_code, discord_id)
             params = urllib.parse.urlencode({
-                "token": client_token,
-                "discord_tag": discord_tag,
-                "discord_id": discord_id,
-                "guild_verified": "1" if member_data else "0",
-                "guild_roles": role_ids,
-                "expires_at": expires_at,
+                "code": auth_code,
+                "ws_port": PORT + 1,
             })
             sep = "&" if "?" in redirect_uri else "?"
-            self.redirect(f"{redirect_uri}{sep}{params}")
+            location = f"{redirect_uri}{sep}{params}"
+            session_id = secrets.token_hex(32)
+            db.create_session(session_id, discord_id, auth.SESSION_TTL)
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", location)
+            self.send_header("Set-Cookie", f"session_id={session_id}; SameSite=Lax; Path=/; Max-Age={auth.SESSION_TTL}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
 
         session_id = secrets.token_hex(32)
@@ -419,12 +585,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_logout(self, qs):
         cookie = self.headers.get("Cookie", "")
-        if cookie:
-            c = SimpleCookie()
-            c.load(cookie)
-            sid = c.get("session_id")
-            if sid:
-                db.delete_session(sid.value)
+        if not cookie:
+            self.redirect("/")
+            return
+        c = SimpleCookie()
+        c.load(cookie)
+        sid = c.get("session_id")
+        if not sid:
+            self.redirect("/")
+            return
+        user = db.get_user_by_session(sid.value)
+        if user:
+            db.get_db().execute("DELETE FROM client_tokens WHERE discord_id=?", (user["discord_id"],))
+            db.get_db().commit()
+            ws_server.close(user["discord_id"])
+        db.delete_session(sid.value)
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", "/")
         self.send_header("Set-Cookie", "session_id=; SameSite=Lax; Path=/; Max-Age=0")
@@ -458,6 +633,174 @@ class Handler(BaseHTTPRequestHandler):
             self.redirect(f"/orders?error={urllib.parse.quote(err)}")
             return
         self.redirect("/orders?fulfilled=1")
+
+    def _handle_admin_post(self, user, data):
+        action = data.get("action", "")
+        level = db.get_user_role_level(user["discord_id"])
+
+        if action == "add_role":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            name = data.get("name", "").strip()
+            lvl = int(data.get("level", 1))
+            discord_role_id = data.get("discord_role_id", "") or None
+            if not name:
+                self.redirect("/admin?error=missing_name")
+                return
+            db.add_role(name, lvl, discord_role_id)
+            self.redirect("/admin?saved=1")
+
+        elif action == "update_role":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            role_id = data.get("role_id", "")
+            name = data.get("name", "").strip()
+            lvl = int(data.get("level", 1))
+            if not role_id or not name:
+                self.redirect("/admin?error=missing_fields")
+                return
+            db.update_role(role_id, name, lvl)
+            self.redirect("/admin?saved=1")
+
+        elif action == "delete_role":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            role_id = data.get("role_id", "")
+            if not role_id:
+                self.redirect("/admin?error=missing_id")
+                return
+            db.delete_role(role_id)
+            self.redirect("/admin?saved=1")
+
+        elif action == "set_user_role":
+            if level < 2:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            target_id = data.get("discord_id", "")
+            role_id = data.get("role_id", "")
+            if not target_id or not role_id:
+                self.redirect("/admin?error=missing_fields")
+                return
+            target = db.get_db().execute("SELECT * FROM users WHERE discord_id=?", (target_id,)).fetchone()
+            if not target:
+                self.redirect("/admin?error=user_not_found")
+                return
+            target_level = db.get_user_role_level(target_id)
+            if level < 3 and target_level >= 2:
+                self.redirect("/admin?error=cannot_modify_mod_admin")
+                return
+            db.set_user_role(target_id, role_id)
+            self.redirect("/admin?saved=1")
+
+        elif action == "set_user_banned":
+            if level < 2:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            target_id = data.get("discord_id", "")
+            banned = data.get("banned", "0") == "1"
+            if not target_id:
+                self.redirect("/admin?error=missing_id")
+                return
+            target_level = db.get_user_role_level(target_id)
+            if level < 3 and target_level >= 2:
+                self.redirect("/admin?error=cannot_modify_mod_admin")
+                return
+            db.set_user_banned(target_id, banned)
+            self.redirect("/admin?saved=1")
+
+        elif action == "clear_user_token":
+            if level < 2:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            target_id = data.get("discord_id", "")
+            if not target_id:
+                self.redirect("/admin?error=missing_id")
+                return
+            db.clear_user_token(target_id)
+            self.redirect("/admin?saved=1")
+
+        elif action == "delete_user":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            target_id = data.get("discord_id", "")
+            if not target_id:
+                self.redirect("/admin?error=missing_id")
+                return
+            db.delete_user_record(target_id)
+            self.redirect("/admin?saved=1")
+
+        elif action == "add_item":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            name = data.get("name", "").strip()
+            item_id = data.get("item_id", "").strip()
+            if not name or not item_id:
+                self.redirect("/admin?error=missing_fields")
+                return
+            existing = db.get_db().execute("SELECT id FROM items WHERE id=? OR name=?", (item_id, name)).fetchone()
+            if existing:
+                self.redirect("/admin?error=id_or_name_taken")
+                return
+            db.get_db().execute("INSERT INTO items (id, name) VALUES (?, ?)", (int(item_id), name))
+            db.get_db().commit()
+            self.redirect("/admin?saved=1")
+
+        elif action == "delete_item":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            item_id = data.get("item_id", "")
+            if not item_id:
+                self.redirect("/admin?error=missing_id")
+                return
+            db.delete_custom_item(item_id)
+            self.redirect("/admin?saved=1")
+
+        elif action == "add_station":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            name = data.get("name", "").strip()
+            station_id = data.get("station_id", "").strip()
+            if not name or not station_id:
+                self.redirect("/admin?error=missing_fields")
+                return
+            existing = db.get_db().execute("SELECT id FROM stations WHERE id=? OR name=?", (station_id, name)).fetchone()
+            if existing:
+                self.redirect("/admin?error=id_or_name_taken")
+                return
+            db.get_db().execute("INSERT INTO stations (id, name) VALUES (?, ?)", (int(station_id), name))
+            db.get_db().commit()
+            self.redirect("/admin?saved=1")
+
+        elif action == "delete_station":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            station_id = data.get("station_id", "")
+            if not station_id:
+                self.redirect("/admin?error=missing_id")
+                return
+            db.delete_custom_station(station_id)
+            self.redirect("/admin?saved=1")
+
+        elif action == "save_config":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            for key in ("guild_name", "discord_client_id", "discord_client_secret", "discord_bot_token"):
+                val = data.get(key, "").strip()
+                if val:
+                    db.set_config(key, val)
+            self.redirect("/admin?saved=1")
+
+        else:
+            self.redirect("/admin?error=unknown_action")
 
     def respond_json(self, data, status=HTTPStatus.OK):
         body = json.dumps(data).encode("utf-8")
@@ -501,10 +844,15 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     db.init_db()
+    gn = auth.get_guild_name()
+    if gn:
+        render.GUILD_NAME = gn
     bot.start()
+    ws_server.start(PORT + 1)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"SC Community SHOWER")
-    print(f"  SHOpfront, Workorder and Exchange Register")
+    print(f"Sho.W.E.R")
+    print(f"  {render.GUILD_NAME}")
     print(f"  http://localhost:{PORT}")
+    print(f"  ws://localhost:{PORT + 1}")
     print(f"  Database: {db.DB_PATH}")
     server.serve_forever()
