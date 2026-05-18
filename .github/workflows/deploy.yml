@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 env:
-  AZURE_WEBAPP_NAME: ${{ secrets.AZURE_WEBAPP_NAME }}
-  REGISTRY_URL: ${{ secrets.REGISTRY_URL }}
+  AZURE_WEBAPP_NAME: ${{ vars.AZURE_WEBAPP_NAME || secrets.AZURE_WEBAPP_NAME }}
+  REGISTRY_URL: ${{ vars.REGISTRY_URL || secrets.REGISTRY_URL }}
   IMAGE_NAME: shower
   IMAGE_TAG: ${{ github.sha }}
 
