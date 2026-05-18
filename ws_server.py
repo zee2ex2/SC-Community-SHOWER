@@ -4,7 +4,6 @@ import threading
 import time
 import websockets
 
-import api
 import db
 
 _connections = {}
@@ -25,7 +24,7 @@ async def _handler(websocket):
 
             if msg_type == "auth":
                 token = data.get("token", "")
-                user = api.auth_token(token)
+                user = db.get_user_by_client_token(token)
                 if user:
                     discord_id = user["discord_id"]
                     with _connections_lock:
@@ -38,12 +37,17 @@ async def _handler(websocket):
 
             elif msg_type == "auth_code":
                 code = data.get("code", "")
-                user = api.auth_code(code)
-                if user:
-                    discord_id = user["discord_id"]
+                with _auth_codes_lock:
+                    discord_id = _auth_codes.pop(code, None)
+                if discord_id:
                     with _connections_lock:
                         _connections[discord_id] = websocket
-                    await websocket.send(json.dumps({"type": "auth_ok", "user": user}))
+                    user = db.get_db().execute(
+                        "SELECT discord_id, discord_tag, username, display_name FROM users WHERE discord_id=?",
+                        (discord_id,)
+                    ).fetchone()
+                    info = dict(user) if user else {}
+                    await websocket.send(json.dumps({"type": "auth_ok", "user": info}))
                     print(f"[ws] Client auth_code: {discord_id}", flush=True)
                 else:
                     await websocket.send(json.dumps({"type": "auth_error", "error": "Invalid code"}))
@@ -53,20 +57,29 @@ async def _handler(websocket):
                 action = data.get("action", "")
                 itemid = data.get("itemid", "")
                 item_name = data.get("item_name", "")
-                item_name, _ = api.resolve_item(itemid, item_name)
+                if not item_name and itemid:
+                    row = db.get_db().execute("SELECT name FROM items WHERE id=?", (int(itemid),)).fetchone()
+                    item_name = row["name"] if row else ""
                 if not item_name:
                     continue
                 quality = int(data.get("quality", 100))
                 quantity_scu = float(data.get("quantity_scu", 1.0))
                 station = data.get("station", "")
                 stationid = data.get("stationid", "")
-                station_name, _ = api.resolve_station(stationid, station)
-                if station_name:
-                    station = station_name
+                if not station and stationid:
+                    row = db.get_db().execute("SELECT name FROM stations WHERE id=?", (int(stationid),)).fetchone()
+                    station = row["name"] if row else ""
                 if action == "add":
-                    api.sync_inventory(discord_id, item_name, quality, quantity_scu, station)
+                    db.sync_inventory(discord_id, item_name, quality, quantity_scu, station)
+                    db.log_sync(discord_id, "push", "ok", f"WS synced {item_name}")
                 elif action == "delete":
-                    api.delete_inventory(discord_id, item_name, quality, station)
+                    row = db.get_db().execute(
+                        "SELECT id FROM community_inventory WHERE discord_id=? AND item_name=? AND quality=? AND station=?",
+                        (discord_id, item_name, quality, station)
+                    ).fetchone()
+                    if row:
+                        db.delete_inventory_item(discord_id, row["id"])
+                        db.log_sync(discord_id, "push", "ok", f"WS deleted {item_name}")
 
             elif msg_type == "ping":
                 await websocket.send(json.dumps({"type": "pong"}))
