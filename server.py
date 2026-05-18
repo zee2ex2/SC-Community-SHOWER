@@ -27,7 +27,8 @@ import ws_server
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "9200"))
-WS_PORT = int(os.environ.get("WS_PORT", str(PORT + 1)))
+WS_PORT_STR = os.environ.get("WS_PORT", "")
+WS_PORT = int(WS_PORT_STR) if WS_PORT_STR else None
 BASE_DIR = Path(__file__).resolve().parent
 
 _jock_oauth_states = {}
@@ -563,7 +564,7 @@ class Handler(BaseHTTPRequestHandler):
             ws_server.add_auth_code(auth_code, discord_id)
             params = urllib.parse.urlencode({
                 "code": auth_code,
-                "ws_port": WS_PORT,
+                "ws_port": WS_PORT or (PORT + 1),
             })
             sep = "&" if "?" in redirect_uri else "?"
             location = f"{redirect_uri}{sep}{params}"
@@ -849,11 +850,13 @@ if __name__ == "__main__":
     if gn:
         render.GUILD_NAME = gn
     bot.start()
-    ws_server.start(WS_PORT)
+    if WS_PORT:
+        ws_server.start(WS_PORT)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Sho.W.E.R")
     print(f"  {render.GUILD_NAME}")
     print(f"  http://localhost:{PORT}")
-    print(f"  ws://localhost:{WS_PORT}")
+    if WS_PORT:
+        print(f"  ws://localhost:{WS_PORT}")
     print(f"  Database: {db.DB_PATH}")
     server.serve_forever()
