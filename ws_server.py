@@ -18,7 +18,7 @@ def handle_connection(sock, headers, client_addr):
     import struct, hashlib, base64
 
     key = headers.get("Sec-WebSocket-Key", "")
-    guid = "258EAFA5-E914-47DA-95CA-5AB5DC11B735"
+    guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     accept = base64.b64encode(hashlib.sha1((key + guid).encode()).digest()).decode()
 
     sock.sendall((
