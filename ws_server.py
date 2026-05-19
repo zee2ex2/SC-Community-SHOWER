@@ -100,18 +100,20 @@ def handle_connection(sock, headers, client_addr):
                     action = data.get("action", "")
                     item_name = data.get("item_name", "")
                     itemid = data.get("itemid", "")
-                    if not item_name and itemid:
+                    if itemid:
                         row = db.get_db().execute("SELECT name FROM items WHERE id=?", (int(itemid),)).fetchone()
-                        item_name = row["name"] if row else ""
+                        if row:
+                            item_name = row["name"]
                     if not item_name:
                         continue
                     quality = int(data.get("quality", 100))
                     quantity_scu = float(data.get("quantity_scu", 1.0))
                     station = data.get("station", "")
                     stationid = data.get("stationid", "")
-                    if not station and stationid:
+                    if stationid:
                         row = db.get_db().execute("SELECT name FROM stations WHERE id=?", (int(stationid),)).fetchone()
-                        station = row["name"] if row else ""
+                        if row:
+                            station = row["name"]
                     if action == "add":
                         db.sync_inventory(discord_id, item_name, quality, quantity_scu, station)
                         db.log_sync(discord_id, "push", "ok", f"WS synced {item_name}")
