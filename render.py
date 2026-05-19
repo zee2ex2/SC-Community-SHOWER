@@ -46,7 +46,6 @@ def base_html(title, content, user=None, notif_count=0):
             <div class="dropdown-menu">
                 {admin_link}
                 <a class="button ghost" href="/notifications">Notifications{badge}</a>
-                <a class="button ghost" href="/api-keys">API Keys</a>
                 <a class="button ghost" href="/auth/logout" style="color:var(--danger)">Logout</a>
             </div>
         </div>
@@ -67,7 +66,7 @@ def base_html(title, content, user=None, notif_count=0):
 </header>
 <main>{content}</main>
 <footer class="footer">
-  <span>Sho.W.E.R — {esc(GUILD_NAME)}</span>
+  <span>Community Shopfront &middot; Workorder &middot; Exchange Registry — {esc(GUILD_NAME)}</span>
   <span>v0.3.0 &middot; 2956-05-17</span>
 </footer>
 </body></html>"""

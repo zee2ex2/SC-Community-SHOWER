@@ -1,8 +1,8 @@
-# SC Community SHOWER
+# Community ShoWER
 
-SHOpfront · Workorder · Exchange Register
+**S**hopfront · **W**orkorder · **E**xchange **R**egistry
 
-Community inventory management server for Star Citizen organizations. Integrates with Discord for authentication and PITS via JOCK Strap for real-time inventory sync.
+Community inventory management server for Star Citizen organizations. Integrates with Discord for authentication and PITS via JOCKstrap for real-time inventory sync.
 
 ## Features
 
@@ -35,11 +35,9 @@ See `.github/workflows/deploy.yml` for the CI/CD pipeline. Requires:
 - Azure App Service (Linux, Docker)
 - Service principal for deployment
 
-## API
+## WebSocket
 
-### WebSocket (`ws://host:9200`)
-
-Supports JOCK Strap extension for bidirectional inventory sync.
+Supports JOCKstrap extension for bidirectional inventory sync on the same port as HTTP.
 
 ## License
 
