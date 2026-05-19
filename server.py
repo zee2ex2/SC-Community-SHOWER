@@ -43,6 +43,11 @@ def esc(val):
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
+            upgrade = self.headers.get("Upgrade", "").lower()
+            if upgrade == "websocket":
+                import ws_server
+                ws_server.handle_connection(self.request, self.headers, self.client_address)
+                return
             self._handle("GET")
         except Exception as e:
             import traceback

@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import base64
 import json
 import threading
 import time
@@ -11,6 +13,87 @@ _connections_lock = threading.Lock()
 _loop = None
 _auth_codes = {}
 _auth_codes_lock = threading.Lock()
+
+
+def handle_connection(sock, headers, client_addr):
+    """Handle a WebSocket connection from an HTTP upgrade request (same port)."""
+    from websockets.server import ServerProtocol
+    from websockets.sync.server import ServerConnection
+
+    key = headers.get("Sec-WebSocket-Key", "")
+    guid = "258EAFA5-E914-47DA-95CA-5AB5DC11B735"
+    accept = base64.b64encode(hashlib.sha1((key + guid).encode()).digest()).decode()
+
+    sock.sendall((
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Accept: {accept}\r\n"
+        "\r\n"
+    ).encode())
+
+    proto = ServerProtocol()
+    conn = ServerConnection(sock, proto)
+    discord_id = None
+    try:
+        for raw in conn:
+            data = json.loads(raw)
+            msg_type = data.get("type", "")
+            if msg_type == "auth_code":
+                code = data.get("code", "")
+                with _auth_codes_lock:
+                    discord_id = _auth_codes.pop(code, None)
+                if discord_id:
+                    with _connections_lock:
+                        _connections[discord_id] = conn
+                    user = db.get_db().execute(
+                        "SELECT discord_id, discord_tag, username, display_name FROM users WHERE discord_id=?",
+                        (discord_id,)
+                    ).fetchone()
+                    info = dict(user) if user else {}
+                    conn.send(json.dumps({"type": "auth_ok", "user": info}))
+                    print(f"[ws] Client auth_code: {discord_id}", flush=True)
+                else:
+                    conn.send(json.dumps({"type": "auth_error", "error": "Invalid code"}))
+                    return
+            elif msg_type == "sync_inventory" and discord_id:
+                action = data.get("action", "")
+                item_name = data.get("item_name", "")
+                itemid = data.get("itemid", "")
+                if not item_name and itemid:
+                    row = db.get_db().execute("SELECT name FROM items WHERE id=?", (int(itemid),)).fetchone()
+                    item_name = row["name"] if row else ""
+                if not item_name:
+                    continue
+                quality = int(data.get("quality", 100))
+                quantity_scu = float(data.get("quantity_scu", 1.0))
+                station = data.get("station", "")
+                stationid = data.get("stationid", "")
+                if not station and stationid:
+                    row = db.get_db().execute("SELECT name FROM stations WHERE id=?", (int(stationid),)).fetchone()
+                    station = row["name"] if row else ""
+                if action == "add":
+                    db.sync_inventory(discord_id, item_name, quality, quantity_scu, station)
+                    db.log_sync(discord_id, "push", "ok", f"WS synced {item_name}")
+                elif action == "delete":
+                    row = db.get_db().execute(
+                        "SELECT id FROM community_inventory WHERE discord_id=? AND item_name=? AND quality=? AND station=?",
+                        (discord_id, item_name, quality, station)
+                    ).fetchone()
+                    if row:
+                        db.delete_inventory_item(discord_id, row["id"])
+                        db.log_sync(discord_id, "push", "ok", f"WS deleted {item_name}")
+            elif msg_type == "ping":
+                conn.send(json.dumps({"type": "pong"}))
+            elif msg_type == "disconnect":
+                return
+    except Exception:
+        pass
+    finally:
+        if discord_id:
+            with _connections_lock:
+                _connections.pop(discord_id, None)
+            print(f"[ws] Client disconnected: {discord_id}", flush=True)
 
 
 async def _handler(websocket):
@@ -116,8 +199,11 @@ def start(port):
 def send(discord_id, message):
     with _connections_lock:
         ws = _connections.get(discord_id)
-    if ws and _loop:
-        asyncio.run_coroutine_threadsafe(ws.send(json.dumps(message)), _loop)
+    if ws:
+        try:
+            ws.send(json.dumps(message))
+        except Exception:
+            pass
         return True
     return False
 
@@ -125,14 +211,15 @@ def send(discord_id, message):
 def close(discord_id):
     with _connections_lock:
         ws = _connections.pop(discord_id, None)
-    if ws and _loop:
-        async def _close():
-            try:
-                await ws.send(json.dumps({"type": "disconnect"}))
-            except Exception:
-                pass
-            await ws.close()
-        asyncio.run_coroutine_threadsafe(_close(), _loop)
+    if ws:
+        try:
+            ws.send(json.dumps({"type": "disconnect"}))
+        except Exception:
+            pass
+        try:
+            ws.close()
+        except Exception:
+            pass
 
 
 def add_auth_code(code, discord_id):
