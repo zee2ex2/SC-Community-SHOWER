@@ -67,7 +67,7 @@ def base_html(title, content, user=None, notif_count=0):
 <main>{content}</main>
 <footer class="footer">
   <span>Community Shopfront &middot; Workorder &middot; Exchange Registry — {esc(GUILD_NAME)}</span>
-  <span>v0.3.0 &middot; 2956-05-17</span>
+  <span>v0.1.1</span>
 </footer>
 </body></html>"""
 
