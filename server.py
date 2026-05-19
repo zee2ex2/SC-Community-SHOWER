@@ -567,10 +567,7 @@ class Handler(BaseHTTPRequestHandler):
             pits_url = state_data.get("pits_url", "")
             auth_code = secrets.token_hex(8)
             ws_server.add_auth_code(auth_code, discord_id)
-            params = urllib.parse.urlencode({
-                "code": auth_code,
-                "ws_port": WS_PORT or (PORT + 1),
-            })
+            params = urllib.parse.urlencode({"code": auth_code})
             sep = "&" if "?" in redirect_uri else "?"
             location = f"{redirect_uri}{sep}{params}"
             session_id = secrets.token_hex(32)
