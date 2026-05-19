@@ -18,7 +18,7 @@ def auth_url():
         "response_type": "code",
     }
     if GUILD_ID:
-        params["scope"] = "identify guilds.members.read"
+        params["scope"] = "identify guilds guilds.members.read"
         params["guild_id"] = GUILD_ID
     else:
         params["scope"] = "identify"
