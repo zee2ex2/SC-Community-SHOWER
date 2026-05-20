@@ -7,10 +7,11 @@ from pathlib import Path
 
 _DSN = os.environ.get("SHOWER_DB", str(Path(__file__).resolve().parent / "shower_data" / "shower.db"))
 _IS_MYSQL = _DSN.startswith("mysql://")
+_IS_ODBC = not _IS_MYSQL and ("=" in _DSN and "Driver" in _DSN)
 _local = threading.local()
 _write_lock = threading.RLock()
 
-# MySQL connection pool (lazy-initialized)
+# Connection pools (lazy-initialized)
 _pool = None
 _pool_lock = None
 
@@ -18,16 +19,21 @@ if _IS_MYSQL:
     import pymysql
     _pool = queue.Queue(maxsize=20)
     _pool_lock = threading.Lock()
+elif _IS_ODBC:
+    import pyodbc
 
 def _new_conn():
-    import urllib.parse
-    p = urllib.parse.urlparse(_DSN)
-    return pymysql.connect(
-        host=p.hostname or "localhost", port=p.port or 3306,
-        user=p.username or "root", password=p.password or "",
-        database=p.path.lstrip("/") or "shower",
-        charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor, autocommit=False,
-    )
+    if _IS_MYSQL:
+        import urllib.parse
+        p = urllib.parse.urlparse(_DSN)
+        return pymysql.connect(
+            host=p.hostname or "localhost", port=p.port or 3306,
+            user=p.username or "root", password=p.password or "",
+            database=p.path.lstrip("/") or "shower",
+            charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor, autocommit=False,
+        )
+    if _IS_ODBC:
+        return pyodbc.connect(_DSN, autocommit=False)
 
 def get_db():
     if _IS_MYSQL:
@@ -35,19 +41,22 @@ def get_db():
             return _pool.get_nowait()
         except queue.Empty:
             return _new_conn()
-    else:
-        if not hasattr(_local, "conn") or _local.conn is None:
-            if not _DSN.startswith("/"):
-                Path(_DSN).parent.mkdir(parents=True, exist_ok=True)
-            _local.conn = sqlite3.connect(_DSN, check_same_thread=False)
-            _local.conn.row_factory = sqlite3.Row
-            _local.conn.execute("PRAGMA journal_mode=WAL")
-            _local.conn.execute("PRAGMA foreign_keys=ON")
-        return _local.conn
+    if _IS_ODBC:
+        return _new_conn()
+    if not hasattr(_local, "conn") or _local.conn is None:
+        if not _DSN.startswith("/"):
+            Path(_DSN).parent.mkdir(parents=True, exist_ok=True)
+        _local.conn = sqlite3.connect(_DSN, check_same_thread=False)
+        _local.conn.row_factory = sqlite3.Row
+        _local.conn.execute("PRAGMA journal_mode=WAL")
+        _local.conn.execute("PRAGMA foreign_keys=ON")
+    return _local.conn
 
 def _put_db(conn):
     if _IS_MYSQL:
         _pool.put(conn)
+    elif _IS_ODBC:
+        conn.close()
 
 if _IS_MYSQL:
     Q = "%s"
@@ -59,6 +68,18 @@ if _IS_MYSQL:
     COLINFO = lambda t: f"SHOW COLUMNS FROM `{t}`"
     UPSERT = lambda t, p: "ON DUPLICATE KEY UPDATE"
     EXCLUDED = lambda col: f"VALUES({col})"
+    LIMIT_CLAUSE = lambda p: f"LIMIT {p}"
+elif _IS_ODBC:
+    Q = "?"
+    NOW = "GETDATE()"
+    NOW_N = lambda s: f"DATEADD(SECOND, {s}, GETDATE())"
+    NOW_M = lambda d: f"DATEADD(DAY, -{d}, GETDATE())"
+    IGNORE = "INSERT"  # SQL Server: bare INSERT (no IGNORE); gated by existence checks
+    LASTID = "CAST(COALESCE(SCOPE_IDENTITY(), @@IDENTITY) AS BIGINT)"
+    COLINFO = lambda t: f"SELECT COLUMN_NAME AS name FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{t}'"
+    UPSERT = lambda t, p: ""  # Not used in ODBC path
+    EXCLUDED = lambda col: f"EXCLUDED.{col}"
+    LIMIT_CLAUSE = lambda p: f"OFFSET 0 ROWS FETCH NEXT {p} ROWS ONLY"
 else:
     Q = "?"
     NOW = "datetime('now')"
@@ -69,6 +90,7 @@ else:
     COLINFO = lambda t: f"PRAGMA table_info({t})"
     UPSERT = lambda t, p: f"ON CONFLICT({p}) DO UPDATE SET"
     EXCLUDED = lambda col: f"excluded.{col}"
+    LIMIT_CLAUSE = lambda p: f"LIMIT {p}"
 
 DB_PATH = _DSN
 SHOWER_VERSION = "0.2.0"
@@ -96,6 +118,8 @@ def _cols(table):
     _put_db(db)
     if _IS_MYSQL:
         return [r["Field"] for r in data]
+    if _IS_ODBC:
+        return [r["name"] for r in data]
     return [r[1] for r in data]
 
 
@@ -103,8 +127,18 @@ def _cols(table):
 
 def init_db():
     db = get_db()
-    AI = "AUTO_INCREMENT" if _IS_MYSQL else "AUTOINCREMENT"
-    CT = "CURRENT_TIMESTAMP"
+    if _IS_ODBC:
+        AI = "IDENTITY(1,1)"
+        PKI = "INT IDENTITY(1,1) PRIMARY KEY"
+        CT = "GETDATE()"
+    elif _IS_MYSQL:
+        AI = "AUTO_INCREMENT"
+        PKI = f"INTEGER PRIMARY KEY {AI}"
+        CT = "CURRENT_TIMESTAMP"
+    else:
+        AI = "AUTOINCREMENT"
+        PKI = f"INTEGER PRIMARY KEY {AI}"
+        CT = "CURRENT_TIMESTAMP"
     schema = f"""
     CREATE TABLE IF NOT EXISTS users (
         discord_id VARCHAR(64) PRIMARY KEY,
@@ -126,21 +160,21 @@ def init_db():
         created_at TIMESTAMP DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS items (
-        id INTEGER PRIMARY KEY {AI},
+        id {PKI},
         name VARCHAR(255) UNIQUE NOT NULL,
         category TEXT DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS systems (
-        id INTEGER PRIMARY KEY {AI},
+        id {PKI},
         name VARCHAR(255) UNIQUE NOT NULL
     );
     CREATE TABLE IF NOT EXISTS stations (
-        id INTEGER PRIMARY KEY {AI},
+        id {PKI},
         name VARCHAR(255) UNIQUE NOT NULL,
         system_id INTEGER
     );
     CREATE TABLE IF NOT EXISTS community_inventory (
-        id INTEGER PRIMARY KEY {AI},
+        id {PKI},
         discord_id VARCHAR(64) NOT NULL,
         item_name VARCHAR(255) NOT NULL,
         quality INTEGER DEFAULT 100,
@@ -149,7 +183,7 @@ def init_db():
         synced_at TIMESTAMP DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS order_requests (
-        id INTEGER PRIMARY KEY {AI},
+        id {PKI},
         discord_id VARCHAR(64) NOT NULL,
         item_name VARCHAR(255) NOT NULL,
         min_quality INTEGER DEFAULT 1,
@@ -161,7 +195,7 @@ def init_db():
         fulfilled_at TIMESTAMP
     );
     CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY {AI},
+        id {PKI},
         discord_id VARCHAR(64) NOT NULL,
         title TEXT NOT NULL,
         body TEXT DEFAULT '',
@@ -170,7 +204,7 @@ def init_db():
         created_at TIMESTAMP DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS sync_log (
-        id INTEGER PRIMARY KEY {AI},
+        id {PKI},
         discord_id VARCHAR(64),
         direction TEXT,
         status TEXT,
@@ -196,7 +230,7 @@ def init_db():
         expires_at TIMESTAMP NOT NULL
     );
     CREATE TABLE IF NOT EXISTS roles (
-        id INTEGER PRIMARY KEY {AI},
+        id {PKI},
         name VARCHAR(255) UNIQUE NOT NULL,
         level INTEGER NOT NULL DEFAULT 1,
         discord_role_id VARCHAR(64),
@@ -204,7 +238,7 @@ def init_db():
         created_at TIMESTAMP DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS itemcategory (
-        id INTEGER PRIMARY KEY {AI},
+        id {PKI},
         name VARCHAR(255) NOT NULL,
         parent_id INTEGER DEFAULT 0
     );
@@ -436,17 +470,19 @@ def ensure_user(discord_id):
 def upsert_user(discord_id, discord_tag, username, display_name, avatar, access_token, refresh_token,
                 token_expires_in, role_ids, is_admin):
     db = get_db()
-    db.execute(f"""INSERT INTO users (discord_id, discord_tag, username, display_name, avatar,
-                access_token, refresh_token, token_expires_at, role_ids, is_admin)
-                VALUES ({Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q})
-                {UPSERT("users", "discord_id")}
-                discord_tag={EXCLUDED("discord_tag")}, username={EXCLUDED("username")},
-                display_name={EXCLUDED("display_name")},
-                avatar={EXCLUDED("avatar")}, access_token={EXCLUDED("access_token")},
-                refresh_token={EXCLUDED("refresh_token")}, token_expires_at={EXCLUDED("token_expires_at")},
-                role_ids={EXCLUDED("role_ids")}, is_admin={EXCLUDED("is_admin")}""",
-               (discord_id, discord_tag, username, display_name, avatar, access_token,
-                refresh_token, token_expires_in, role_ids, is_admin))
+    existing = db.execute(f"SELECT discord_id FROM users WHERE discord_id={Q}", (discord_id,)).fetchone()
+    if existing:
+        db.execute(f"""UPDATE users SET discord_tag={Q}, username={Q}, display_name={Q}, avatar={Q},
+                    access_token={Q}, refresh_token={Q}, token_expires_at={Q}, role_ids={Q}, is_admin={Q}
+                    WHERE discord_id={Q}""",
+                   (discord_tag, username, display_name, avatar, access_token,
+                    refresh_token, token_expires_in, role_ids, is_admin, discord_id))
+    else:
+        db.execute(f"""INSERT INTO users (discord_id, discord_tag, username, display_name, avatar,
+                    access_token, refresh_token, token_expires_at, role_ids, is_admin)
+                    VALUES ({Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q})""",
+                   (discord_id, discord_tag, username, display_name, avatar, access_token,
+                    refresh_token, token_expires_in, role_ids, is_admin))
     _assign_user_role(discord_id, role_ids)
 
 
@@ -588,7 +624,7 @@ def _ensure_item(name):
     db = get_db()
     existing = db.execute(f"SELECT id FROM items WHERE name={Q}", (name,)).fetchone()
     if not existing:
-        db.execute(f"{IGNORE} INTO items (name) VALUES ({Q})", (name,))
+        db.execute(f"INSERT INTO items (name) VALUES ({Q})", (name,))
         db.commit()
     _put_db(db)
 
@@ -599,7 +635,7 @@ def _ensure_station(name):
     db = get_db()
     existing = db.execute(f"SELECT id FROM stations WHERE name={Q}", (name,)).fetchone()
     if not existing:
-        db.execute(f"{IGNORE} INTO stations (name) VALUES ({Q})", (name,))
+        db.execute(f"INSERT INTO stations (name) VALUES ({Q})", (name,))
         db.commit()
     _put_db(db)
 
@@ -623,11 +659,11 @@ def _item_exists(name):
 def get_item_autocomplete(prefix, limit=10):
     db = get_db()
     names = set()
-    for r in db.execute(f"SELECT DISTINCT name FROM items WHERE name LIKE {Q} ORDER BY name LIMIT {Q}",
+    for r in db.execute(f"SELECT DISTINCT name FROM items WHERE name LIKE {Q} ORDER BY name {LIMIT_CLAUSE(Q)}",
                         (f"%{prefix}%", limit)):
         names.add(r["name"])
     if len(names) < limit:
-        for r in db.execute(f"SELECT DISTINCT item_name FROM community_inventory WHERE item_name LIKE {Q} ORDER BY item_name LIMIT {Q}",
+        for r in db.execute(f"SELECT DISTINCT item_name FROM community_inventory WHERE item_name LIKE {Q} ORDER BY item_name {LIMIT_CLAUSE(Q)}",
                             (f"%{prefix}%", limit)):
             names.add(r["item_name"])
     _put_db(db)
@@ -637,11 +673,11 @@ def get_item_autocomplete(prefix, limit=10):
 def get_station_autocomplete(prefix, limit=10):
     db = get_db()
     names = set()
-    for r in db.execute(f"SELECT DISTINCT name FROM stations WHERE name LIKE {Q} ORDER BY name LIMIT {Q}",
+    for r in db.execute(f"SELECT DISTINCT name FROM stations WHERE name LIKE {Q} ORDER BY name {LIMIT_CLAUSE(Q)}",
                         (f"%{prefix}%", limit)):
         names.add(r["name"])
     if len(names) < limit:
-        for r in db.execute(f"SELECT DISTINCT station FROM community_inventory WHERE station LIKE {Q} ORDER BY station LIMIT {Q}",
+        for r in db.execute(f"SELECT DISTINCT station FROM community_inventory WHERE station LIKE {Q} ORDER BY station {LIMIT_CLAUSE(Q)}",
                             (f"%{prefix}%", limit)):
             if r["station"]:
                 names.add(r["station"])
@@ -691,7 +727,7 @@ def get_user_inventory(discord_id, limit=None):
     q = f"SELECT * FROM community_inventory WHERE discord_id={Q} ORDER BY synced_at DESC"
     params = [discord_id]
     if limit:
-        q += f" LIMIT {Q}"
+        q += f" {LIMIT_CLAUSE(Q)}"
         params.append(limit)
     rows = db.execute(q, params).fetchall()
     _put_db(db)
@@ -719,7 +755,7 @@ def all_inventory(limit=200, search=None, qual_min=None, qual_max=None, qty_min=
     rows = db.execute(
         f"""SELECT ci.*, COALESCE(u.display_name, u.discord_tag) AS display_name FROM community_inventory ci
         LEFT JOIN users u ON ci.discord_id = u.discord_id
-        {where} ORDER BY ci.synced_at DESC LIMIT {Q}""",
+        {where} ORDER BY ci.synced_at DESC {LIMIT_CLAUSE(Q)}""",
         params).fetchall()
     _put_db(db)
     return rows
@@ -766,7 +802,7 @@ def get_user_orders(discord_id, limit=None):
     q = f"SELECT * FROM order_requests WHERE discord_id={Q} ORDER BY created_at DESC"
     params = [discord_id]
     if limit:
-        q += f" LIMIT {Q}"
+        q += f" {LIMIT_CLAUSE(Q)}"
         params.append(limit)
     rows = db.execute(q, params).fetchall()
     _put_db(db)
@@ -828,7 +864,7 @@ def get_notifications(discord_id, limit=None):
     q = f"SELECT * FROM notifications WHERE discord_id={Q} ORDER BY created_at DESC"
     params = [discord_id]
     if limit:
-        q += f" LIMIT {Q}"
+        q += f" {LIMIT_CLAUSE(Q)}"
         params.append(limit)
     rows = db.execute(q, params).fetchall()
     _put_db(db)
@@ -837,7 +873,7 @@ def get_notifications(discord_id, limit=None):
 
 def get_pending_dm_notifications(limit=20):
     db = get_db()
-    rows = db.execute(f"SELECT * FROM notifications WHERE dm_sent=0 ORDER BY created_at ASC LIMIT {Q}",
+    rows = db.execute(f"SELECT * FROM notifications WHERE dm_sent=0 ORDER BY created_at ASC {LIMIT_CLAUSE(Q)}",
                       (limit,)).fetchall()
     _put_db(db)
     return rows
@@ -861,7 +897,9 @@ def log_sync(discord_id, direction, status, message):
 def _seed_defaults():
     db = get_db()
     for name, level in [("Blocked", 0), ("User", 1), ("Mod", 2), ("Admin", 3)]:
-        db.execute(f"{IGNORE} INTO roles (name, level) VALUES ({Q},{Q})", (name, level))
+        row = db.execute(f"SELECT 1 AS ok FROM roles WHERE name={Q}", (name,)).fetchone()
+        if not row:
+            db.execute(f"INSERT INTO roles (name, level) VALUES ({Q},{Q})", (name, level))
     admin_role_id = os.environ.get("DISCORD_ADMIN_ROLE", "")
     if admin_role_id:
         db.execute(f"UPDATE roles SET discord_role_id={Q}, is_env=1 WHERE name='Admin'", (admin_role_id,))
@@ -879,6 +917,8 @@ def _close_all_connections():
             except:
                 pass
         _pool = queue.Queue(maxsize=20)
+    elif _IS_ODBC:
+        pass
     else:
         if hasattr(_local, "conn") and _local.conn:
             try:
@@ -889,19 +929,28 @@ def _close_all_connections():
 
 
 def reset_database():
+    conn = get_db()
     tables = ["community_inventory", "order_requests", "notifications", "sync_log",
               "client_tokens", "api_keys", "sessions", "items", "stations",
               "systems", "itemcategory", "roles", "users", "config"]
-    db = get_db()
     if _IS_MYSQL:
-        db.execute("SET FOREIGN_KEY_CHECKS=0")
+        conn.execute("SET FOREIGN_KEY_CHECKS=0")
+    elif _IS_ODBC:
+        for t in tables:
+            conn.execute(f"DROP TABLE IF EXISTS {t}")
+        conn.commit()
+        _put_db(conn)
+        init_db()
+        return
+    else:
+        pass
     for t in tables:
-        db.execute(f"DROP TABLE IF EXISTS {t}")
+        conn.execute(f"DROP TABLE IF EXISTS {t}")
     if _IS_MYSQL:
-        db.execute("SET FOREIGN_KEY_CHECKS=1")
-    db.commit()
-    _put_db(db)
-    if not _IS_MYSQL:
+        conn.execute("SET FOREIGN_KEY_CHECKS=1")
+    conn.commit()
+    _put_db(conn)
+    if not _IS_MYSQL and not _IS_ODBC:
         if hasattr(_local, "conn") and _local.conn:
             try:
                 _local.conn.close()
@@ -912,12 +961,13 @@ def reset_database():
 
 
 def set_dsn(dsn):
-    global _DSN, _IS_MYSQL, DB_PATH, _pool, _pool_lock
-    global Q, NOW, NOW_N, NOW_M, IGNORE, LASTID, COLINFO, UPSERT, EXCLUDED
+    global _DSN, _IS_MYSQL, _IS_ODBC, DB_PATH, _pool, _pool_lock
+    global Q, NOW, NOW_N, NOW_M, IGNORE, LASTID, COLINFO, UPSERT, EXCLUDED, LIMIT_CLAUSE
     _close_all_connections()
     _DSN = dsn
     DB_PATH = dsn
     _IS_MYSQL = dsn.startswith("mysql://")
+    _IS_ODBC = not _IS_MYSQL and ("=" in dsn and "Driver" in dsn)
     if _IS_MYSQL:
         import pymysql
         _pool = queue.Queue(maxsize=20)
@@ -931,6 +981,20 @@ def set_dsn(dsn):
         COLINFO = lambda t: f"SHOW COLUMNS FROM `{t}`"
         UPSERT = lambda t, p: "ON DUPLICATE KEY UPDATE"
         EXCLUDED = lambda col: f"VALUES({col})"
+        LIMIT_CLAUSE = lambda p: f"LIMIT {p}"
+    elif _IS_ODBC:
+        _pool = None
+        _pool_lock = None
+        Q = "?"
+        NOW = "GETDATE()"
+        NOW_N = lambda s: f"DATEADD(SECOND, {s}, GETDATE())"
+        NOW_M = lambda d: f"DATEADD(DAY, -{d}, GETDATE())"
+        IGNORE = "INSERT"
+        LASTID = "CAST(COALESCE(SCOPE_IDENTITY(), @@IDENTITY) AS BIGINT)"
+        COLINFO = lambda t: f"SELECT COLUMN_NAME AS name FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{t}'"
+        UPSERT = lambda t, p: ""
+        EXCLUDED = lambda col: f"EXCLUDED.{col}"
+        LIMIT_CLAUSE = lambda p: f"OFFSET 0 ROWS FETCH NEXT {p} ROWS ONLY"
     else:
         _pool = None
         _pool_lock = None
@@ -943,6 +1007,7 @@ def set_dsn(dsn):
         COLINFO = lambda t: f"PRAGMA table_info({t})"
         UPSERT = lambda t, p: f"ON CONFLICT({p}) DO UPDATE SET"
         EXCLUDED = lambda col: f"excluded.{col}"
+        LIMIT_CLAUSE = lambda p: f"LIMIT {p}"
     init_db()
 
 
