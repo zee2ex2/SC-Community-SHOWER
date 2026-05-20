@@ -133,7 +133,9 @@ def _cols(table):
     if _IS_MYSQL:
         return [r["Field"] for r in data]
     if _IS_ODBC:
-        return [r["name"] for r in data]
+        names = [r[0] for r in data]
+        print(f"[db] _cols({table}): {names}", flush=True)
+        return names
     return [r[1] for r in data]
 
 
@@ -173,7 +175,10 @@ def init_db():
         refresh_token TEXT,
         token_expires_at INTEGER DEFAULT 0,
         role_ids TEXT DEFAULT '',
+        role_id INTEGER,
         is_admin INTEGER DEFAULT 0,
+        banned INTEGER DEFAULT 0,
+        last_seen {TS},
         created_at {TS} DEFAULT {CT}
     );
     {CTIF} sessions (
