@@ -211,7 +211,10 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST":
                 self._handle_admin_post(user, data)
                 return
-            body = render.admin_page(user, db, qs)
+            import bot
+            discord_roles = bot.fetch_guild_roles()
+            bot_token_set = bool(bot.BOT_TOKEN)
+            body = render.admin_page(user, db, qs, discord_roles=discord_roles, bot_token_set=bot_token_set)
             self.respond(body)
             return
 
@@ -662,10 +665,11 @@ class Handler(BaseHTTPRequestHandler):
             role_id = data.get("role_id", "")
             name = data.get("name", "").strip()
             lvl = int(data.get("level", 1))
+            discord_role_id = data.get("discord_role_id", "") or None
             if not role_id or not name:
                 self.redirect("/admin?error=missing_fields")
                 return
-            db.update_role(role_id, name, lvl)
+            db.update_role(role_id, name, lvl, discord_role_id)
             self.redirect("/admin?saved=1")
 
         elif action == "delete_role":
@@ -802,6 +806,22 @@ class Handler(BaseHTTPRequestHandler):
                 if val:
                     db.set_config(key, val)
             self.redirect("/admin?saved=1")
+
+        elif action == "reboot_bot":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            import bot
+            bot.restart()
+            self.redirect("/admin?saved=1")
+
+        elif action == "bot_invite":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            cid = os.environ.get("DISCORD_CLIENT_ID", "")
+            invite_url = f"https://discord.com/api/oauth2/authorize?client_id={cid}&permissions=0&scope=bot"
+            self.redirect(invite_url)
 
         else:
             self.redirect("/admin?error=unknown_action")

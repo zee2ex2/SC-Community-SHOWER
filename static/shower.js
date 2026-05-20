@@ -215,7 +215,7 @@ function toggleSection(el) {
   }
 }
 
-function editRole(id, name, level) {
+function editRole(id, name, level, discordRoleId) {
   document.getElementById('role-action').value = 'update_role';
   document.getElementById('role-id').value = id;
   document.getElementById('role-name').value = name;
@@ -223,6 +223,19 @@ function editRole(id, name, level) {
   var radios = document.querySelectorAll('#role-form input[name="level"]');
   for (var i = 0; i < radios.length; i++) {
     radios[i].checked = parseInt(radios[i].value) === level;
+  }
+  var dridField = document.getElementById('role-discord-id');
+  if (dridField) {
+    if (dridField.tagName === 'SELECT') {
+      for (var j = 0; j < dridField.options.length; j++) {
+        if (dridField.options[j].value === discordRoleId) {
+          dridField.selectedIndex = j;
+          break;
+        }
+      }
+    } else {
+      dridField.value = discordRoleId || '';
+    }
   }
   document.getElementById('role-overlay').style.display = 'flex';
 }

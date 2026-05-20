@@ -757,9 +757,9 @@ def add_role(name, level, discord_role_id=None):
 
 
 @write_db
-def update_role(role_id, name, level):
-    get_db().execute("UPDATE roles SET name=?, level=? WHERE id=? AND is_env=0",
-                     (name, level, role_id))
+def update_role(role_id, name, level, discord_role_id=None):
+    get_db().execute("UPDATE roles SET name=?, level=?, discord_role_id=? WHERE id=? AND is_env=0",
+                     (name, level, discord_role_id, role_id))
 
 
 @write_db

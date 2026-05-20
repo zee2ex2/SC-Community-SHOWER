@@ -57,7 +57,7 @@ def base_html(title, content, user=None, notif_count=0):
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{esc(title)} — Sho.W.E.R</title>
 <link rel="stylesheet" href="/static/styles.css?v=4">
-<script src="/static/shower.js"></script>
+<script src="/static/shower.js?v=2"></script>
 </head>
 <body>
 <header class="topbar">
@@ -426,7 +426,7 @@ def notifications_page(user, db):
     return base_html("Notifications", page_panel("Notifications", f'<div class="notif-list">{items}</div>'), user, 0)
 
 
-def admin_page(user, db_obj, qs):
+def admin_page(user, db_obj, qs, discord_roles=None, bot_token_set=False):
     level = db_obj.get_user_role_level(user["discord_id"])
     is_admin = level >= 3
     is_mod = level >= 2
@@ -439,8 +439,9 @@ def admin_page(user, db_obj, qs):
         env_tag = '<span style="color:var(--muted);font-size:11px">SET IN ENV</span>' if r["is_env"] else ""
         actions = ""
         if not r["is_env"]:
+            drid = r["discord_role_id"] or ""
             actions = f"""
-            <button class="button ghost" style="font-size:12px" onclick="editRole({r['id']},'{esc(r['name'])}',{r['level']})">Edit</button>
+            <button class="button ghost" style="font-size:12px" onclick="editRole({r['id']},'{esc(r['name'])}',{r['level']},'{esc(drid)}')">Edit</button>
             <form method="post" action="/admin" style="display:inline" onsubmit="return confirm('Delete role {esc(r['name'])}?')">
                 <input type="hidden" name="action" value="delete_role">
                 <input type="hidden" name="role_id" value="{r['id']}">
@@ -455,6 +456,14 @@ def admin_page(user, db_obj, qs):
 
     role_overlay = ""
     if is_admin:
+        discord_role_opts = ""
+        if discord_roles:
+            opts = ['<option value="">None</option>']
+            for dr in discord_roles:
+                opts.append(f'<option value="{dr["id"]}">{esc(dr["name"])}</option>')
+            discord_role_field = f'<label>Discord Role <span style="color:var(--muted);font-size:11px">(from guild)</span></label><select name="discord_role_id" id="role-discord-id" style="width:100%">{"".join(opts)}</select>'
+        else:
+            discord_role_field = '<label>Discord Role ID <span style="color:var(--muted);font-size:11px">(bot disconnected)</span></label><input type="text" name="discord_role_id" id="role-discord-id" placeholder="Discord Role ID" style="width:100%">'
         role_overlay = f"""<div id="role-overlay" class="modal-overlay" style="display:none" onclick="if(event.target==this)document.getElementById('role-overlay').style.display='none'">
         <div class="modal-content" style="max-width:400px">
             <div class="modal-header"><span id="role-modal-title">Add Role</span>
@@ -465,6 +474,9 @@ def admin_page(user, db_obj, qs):
                 <div class="filter-group">
                     <label>Role Name</label>
                     <input type="text" name="name" id="role-name" required placeholder="Role name" style="width:100%">
+                </div>
+                <div class="filter-group">
+                    {discord_role_field}
                 </div>
                 <div class="filter-group">
                     <label>Permission Level</label>
@@ -619,6 +631,29 @@ def admin_page(user, db_obj, qs):
 
     server_settings = config_form or '<p class="muted">Admin access required.</p>'
 
+    bot_card = ""
+    if is_admin:
+        bot_status = "Connected" if bot_token_set else "Disconnected"
+        bot_status_cls = "ok" if bot_token_set else "error"
+        bot_card = f"""<section class="panel">
+        <div class="section-heading" onclick="toggleSection(this)" style="cursor:pointer">
+            <h2>Bot Settings <span class="collapse-arrow" style="font-size:12px;margin-left:6px;color:var(--muted)">&#9654;</span></h2>
+        </div>
+        <div class="collapse-content" style="display:none">
+            <p style="margin-bottom:12px">Status: <span class="pill {bot_status_cls}">{bot_status}</span></p>
+            <div style="display:flex;gap:8px">
+                <form method="post" action="/admin" style="display:inline">
+                    <input type="hidden" name="action" value="reboot_bot">
+                    <button type="submit" class="button blue">Reboot Bot</button>
+                </form>
+                <form method="post" action="/admin" style="display:inline">
+                    <input type="hidden" name="action" value="bot_invite">
+                    <button type="submit" class="button green">Generate Invite Link</button>
+                </form>
+            </div>
+        </div>
+        </section>"""
+
     cards = f"""
     <section class="panel">
         <div class="section-heading" onclick="toggleSection(this)" style="cursor:pointer">
@@ -638,6 +673,7 @@ def admin_page(user, db_obj, qs):
         </div>
         <div class="collapse-content" style="display:none">{custom_fields}</div>
     </section>
+    {bot_card}
     <section class="panel">
         <div class="section-heading" onclick="toggleSection(this)" style="cursor:pointer">
             <h2>Server Settings <span class="collapse-arrow" style="font-size:12px;margin-left:6px;color:var(--muted)">&#9654;</span></h2>
