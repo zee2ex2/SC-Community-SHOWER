@@ -114,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
                     except json.JSONDecodeError:
                         data = {}
                 else:
-                    form = urllib.parse.parse_qs(body)
+                    form = urllib.parse.parse_qs(body, separator='&')
                     data = {k: v[0].strip() for k, v in form.items() if v}
 
         if path == "/static/styles.css":
