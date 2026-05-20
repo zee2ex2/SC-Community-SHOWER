@@ -36,9 +36,10 @@ def _new_conn():
         )
     if _IS_ODBC:
         import pyodbc
+        import time as _time
         # Check available drivers for diagnostics
         try:
-            return pyodbc.connect(_DSN, autocommit=False)
+            return pyodbc.connect(_DSN, autocommit=False, timeout=10)
         except pyodbc.InterfaceError as e:
             import sys
             print(f"[db] ODBC connection failed: {e}", flush=True)
@@ -47,6 +48,9 @@ def _new_conn():
                 print(f"[db] Available ODBC drivers: {drivers}", flush=True)
             except Exception:
                 pass
+            raise
+        except pyodbc.OperationalError as e:
+            print(f"[db] ODBC connection timeout/refused. Check that the Azure SQL firewall allows App Service traffic. Error: {e}", flush=True)
             raise
 
 def get_db():
