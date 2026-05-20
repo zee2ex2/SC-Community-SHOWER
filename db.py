@@ -147,18 +147,21 @@ def init_db():
         CT = "GETDATE()"
         TS = "DATETIME2"
         CTIF = "CREATE TABLE"
+        QID = lambda x: f"[{x}]"
     elif _IS_MYSQL:
         AI = "AUTO_INCREMENT"
         PKI = f"INTEGER PRIMARY KEY {AI}"
         CT = "CURRENT_TIMESTAMP"
         TS = "TIMESTAMP"
         CTIF = "CREATE TABLE IF NOT EXISTS"
+        QID = lambda x: f"`{x}`"
     else:
         AI = "AUTOINCREMENT"
         PKI = f"INTEGER PRIMARY KEY {AI}"
         CT = "CURRENT_TIMESTAMP"
         TS = "TIMESTAMP"
         CTIF = "CREATE TABLE IF NOT EXISTS"
+        QID = lambda x: x
     schema = f"""
     {CTIF} users (
         discord_id VARCHAR(64) PRIMARY KEY,
@@ -220,7 +223,7 @@ def init_db():
         title TEXT NOT NULL,
         body TEXT DEFAULT '',
         source TEXT DEFAULT 'system',
-        read INTEGER DEFAULT 0,
+        {QID('read')} INTEGER DEFAULT 0,
         created_at {TS} DEFAULT {CT}
     );
     {CTIF} sync_log (
@@ -232,11 +235,11 @@ def init_db():
         synced_at {TS} DEFAULT {CT}
     );
     {CTIF} config (
-        key VARCHAR(255) PRIMARY KEY,
+        {QID('key')} VARCHAR(255) PRIMARY KEY,
         value TEXT
     );
     {CTIF} api_keys (
-        key VARCHAR(64) PRIMARY KEY,
+        {QID('key')} VARCHAR(64) PRIMARY KEY,
         discord_id VARCHAR(64) NOT NULL,
         label TEXT DEFAULT '',
         last_used {TS},
