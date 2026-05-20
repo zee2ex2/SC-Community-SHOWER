@@ -265,8 +265,9 @@ def init_db():
         if s:
             try:
                 db.execute(s)
-            except Exception:
-                pass
+            except Exception as e:
+                if _IS_ODBC:
+                    print(f"[db] DDL error: {e}", flush=True)
     db.commit()
     _put_db(db)
     _migrate()
