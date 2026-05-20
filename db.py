@@ -1015,12 +1015,22 @@ def reset_database():
 def set_dsn(dsn):
     global _DSN, _IS_MYSQL, _IS_ODBC, DB_PATH, _pool, _pool_lock
     global Q, NOW, NOW_N, NOW_M, IGNORE, LASTID, COLINFO, UPSERT, EXCLUDED, LIMIT_CLAUSE
+    is_mysql = dsn.startswith("mysql://")
+    is_odbc = not is_mysql and ("Driver=" in dsn or "driver=" in dsn)
+    print(f"[db] Testing DSN: {'MySQL' if is_mysql else 'ODBC' if is_odbc else 'SQLite'}", flush=True)
+
+    # Test connection before switching
+    if is_odbc:
+        import pyodbc
+        test = pyodbc.connect(dsn, autocommit=False, timeout=10)
+        test.close()
+
+    # Test passed — apply new settings
     _close_all_connections()
     _DSN = dsn
     DB_PATH = dsn
-    _IS_MYSQL = dsn.startswith("mysql://")
-    _IS_ODBC = not _IS_MYSQL and ("Driver=" in dsn or "driver=" in dsn)
-    print(f"[db] DSN type: {'MySQL' if _IS_MYSQL else 'ODBC' if _IS_ODBC else 'SQLite'}", flush=True)
+    _IS_MYSQL = is_mysql
+    _IS_ODBC = is_odbc
     if _IS_MYSQL:
         import pymysql
         _pool = queue.Queue(maxsize=20)
