@@ -77,6 +77,11 @@ def poll_and_send():
         time.sleep(POLL_INTERVAL)
 
 
+def is_connected():
+    """Check if bot is connected to the guild by fetching roles."""
+    return bool(fetch_guild_roles())
+
+
 def fetch_guild_roles():
     """Fetch Discord guild roles via REST API. Returns list of {id, name} or empty list."""
     if not BOT_TOKEN or not GUILD_ID:
@@ -89,6 +94,8 @@ def fetch_guild_roles():
         with urllib.request.urlopen(req, timeout=10) as resp:
             roles = json.loads(resp.read().decode())
             return [{"id": r["id"], "name": r["name"]} for r in roles]
+    except urllib.error.HTTPError:
+        return []
     except Exception as e:
         print(f"[bot] fetch_guild_roles error: {e}", flush=True)
         return []

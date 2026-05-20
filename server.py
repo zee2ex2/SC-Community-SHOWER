@@ -213,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             import bot
             discord_roles = bot.fetch_guild_roles()
-            bot_token_set = bool(bot.BOT_TOKEN)
+            bot_token_set = bool(discord_roles)
             body = render.admin_page(user, db, qs, discord_roles=discord_roles, bot_token_set=bot_token_set)
             self.respond(body)
             return
