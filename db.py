@@ -58,6 +58,7 @@ if _IS_MYSQL:
     LASTID = "LAST_INSERT_ID()"
     COLINFO = lambda t: f"SHOW COLUMNS FROM `{t}`"
     UPSERT = lambda t, p: "ON DUPLICATE KEY UPDATE"
+    EXCLUDED = lambda col: f"VALUES({col})"
 else:
     Q = "?"
     NOW = "datetime('now')"
@@ -67,6 +68,7 @@ else:
     LASTID = "last_insert_rowid()"
     COLINFO = lambda t: f"PRAGMA table_info({t})"
     UPSERT = lambda t, p: f"ON CONFLICT({p}) DO UPDATE SET"
+    EXCLUDED = lambda col: f"excluded.{col}"
 
 DB_PATH = _DSN
 SHOWER_VERSION = "0.2.0"
@@ -438,11 +440,11 @@ def upsert_user(discord_id, discord_tag, username, display_name, avatar, access_
                 access_token, refresh_token, token_expires_at, role_ids, is_admin)
                 VALUES ({Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q})
                 {UPSERT("users", "discord_id")}
-                discord_tag=VALUES(discord_tag), username=VALUES(username),
-                display_name=VALUES(display_name),
-                avatar=VALUES(avatar), access_token=VALUES(access_token),
-                refresh_token=VALUES(refresh_token), token_expires_at=VALUES(token_expires_at),
-                role_ids=VALUES(role_ids), is_admin=VALUES(is_admin)""",
+                discord_tag={EXCLUDED("discord_tag")}, username={EXCLUDED("username")},
+                display_name={EXCLUDED("display_name")},
+                avatar={EXCLUDED("avatar")}, access_token={EXCLUDED("access_token")},
+                refresh_token={EXCLUDED("refresh_token")}, token_expires_at={EXCLUDED("token_expires_at")},
+                role_ids={EXCLUDED("role_ids")}, is_admin={EXCLUDED("is_admin")}""",
                (discord_id, discord_tag, username, display_name, avatar, access_token,
                 refresh_token, token_expires_in, role_ids, is_admin))
     _assign_user_role(discord_id, role_ids)
@@ -911,7 +913,7 @@ def reset_database():
 
 def set_dsn(dsn):
     global _DSN, _IS_MYSQL, DB_PATH, _pool, _pool_lock
-    global Q, NOW, NOW_N, NOW_M, IGNORE, LASTID, COLINFO, UPSERT
+    global Q, NOW, NOW_N, NOW_M, IGNORE, LASTID, COLINFO, UPSERT, EXCLUDED
     _close_all_connections()
     _DSN = dsn
     DB_PATH = dsn
@@ -928,6 +930,7 @@ def set_dsn(dsn):
         LASTID = "LAST_INSERT_ID()"
         COLINFO = lambda t: f"SHOW COLUMNS FROM `{t}`"
         UPSERT = lambda t, p: "ON DUPLICATE KEY UPDATE"
+        EXCLUDED = lambda col: f"VALUES({col})"
     else:
         _pool = None
         _pool_lock = None
@@ -939,6 +942,7 @@ def set_dsn(dsn):
         LASTID = "last_insert_rowid()"
         COLINFO = lambda t: f"PRAGMA table_info({t})"
         UPSERT = lambda t, p: f"ON CONFLICT({p}) DO UPDATE SET"
+        EXCLUDED = lambda col: f"excluded.{col}"
     init_db()
 
 
