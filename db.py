@@ -145,14 +145,17 @@ def init_db():
         AI = "IDENTITY(1,1)"
         PKI = "INT IDENTITY(1,1) PRIMARY KEY"
         CT = "GETDATE()"
+        TS = "DATETIME2"
     elif _IS_MYSQL:
         AI = "AUTO_INCREMENT"
         PKI = f"INTEGER PRIMARY KEY {AI}"
         CT = "CURRENT_TIMESTAMP"
+        TS = "TIMESTAMP"
     else:
         AI = "AUTOINCREMENT"
         PKI = f"INTEGER PRIMARY KEY {AI}"
         CT = "CURRENT_TIMESTAMP"
+        TS = "TIMESTAMP"
     schema = f"""
     CREATE TABLE IF NOT EXISTS users (
         discord_id VARCHAR(64) PRIMARY KEY,
@@ -165,13 +168,13 @@ def init_db():
         token_expires_at INTEGER DEFAULT 0,
         role_ids TEXT DEFAULT '',
         is_admin INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT {CT}
+        created_at {TS} DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS sessions (
         session_id VARCHAR(64) PRIMARY KEY,
         discord_id VARCHAR(64) NOT NULL,
-        expires_at TIMESTAMP,
-        created_at TIMESTAMP DEFAULT {CT}
+        expires_at {TS},
+        created_at {TS} DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS items (
         id {PKI},
@@ -194,7 +197,7 @@ def init_db():
         quality INTEGER DEFAULT 100,
         quantity_scu REAL DEFAULT 1.0,
         station TEXT DEFAULT '',
-        synced_at TIMESTAMP DEFAULT {CT}
+        synced_at {TS} DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS order_requests (
         id {PKI},
@@ -205,8 +208,8 @@ def init_db():
         notes TEXT DEFAULT '',
         status TEXT DEFAULT 'open',
         assigned_discord_id VARCHAR(64),
-        created_at TIMESTAMP DEFAULT {CT},
-        fulfilled_at TIMESTAMP
+        created_at {TS} DEFAULT {CT},
+        fulfilled_at {TS}
     );
     CREATE TABLE IF NOT EXISTS notifications (
         id {PKI},
@@ -215,7 +218,7 @@ def init_db():
         body TEXT DEFAULT '',
         source TEXT DEFAULT 'system',
         read INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT {CT}
+        created_at {TS} DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS sync_log (
         id {PKI},
@@ -223,7 +226,7 @@ def init_db():
         direction TEXT,
         status TEXT,
         message TEXT,
-        synced_at TIMESTAMP DEFAULT {CT}
+        synced_at {TS} DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS config (
         key VARCHAR(255) PRIMARY KEY,
@@ -233,15 +236,15 @@ def init_db():
         key VARCHAR(64) PRIMARY KEY,
         discord_id VARCHAR(64) NOT NULL,
         label TEXT DEFAULT '',
-        last_used TIMESTAMP,
-        expires_at TIMESTAMP,
-        created_at TIMESTAMP DEFAULT {CT}
+        last_used {TS},
+        expires_at {TS},
+        created_at {TS} DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS client_tokens (
         token VARCHAR(64) PRIMARY KEY,
         discord_id VARCHAR(64) NOT NULL,
-        created_at TIMESTAMP DEFAULT {CT},
-        expires_at TIMESTAMP NOT NULL
+        created_at {TS} DEFAULT {CT},
+        expires_at {TS} NOT NULL
     );
     CREATE TABLE IF NOT EXISTS roles (
         id {PKI},
@@ -249,7 +252,7 @@ def init_db():
         level INTEGER NOT NULL DEFAULT 1,
         discord_role_id VARCHAR(64),
         is_env INTEGER DEFAULT 0,
-        created_at TIMESTAMP DEFAULT {CT}
+        created_at {TS} DEFAULT {CT}
     );
     CREATE TABLE IF NOT EXISTS itemcategory (
         id {PKI},
@@ -292,7 +295,8 @@ def _migrate():
         _put_db(db)
 
     cols_u = _cols("users")
-    for col, dtype in [("display_name", "TEXT"), ("role_id", "INTEGER"), ("banned", "INTEGER DEFAULT 0"), ("last_seen", "TIMESTAMP")]:
+    ts_type = "DATETIME2" if _IS_ODBC else "TIMESTAMP"
+    for col, dtype in [("display_name", "TEXT"), ("role_id", "INTEGER"), ("banned", "INTEGER DEFAULT 0"), ("last_seen", ts_type)]:
         if col not in cols_u:
             db = get_db()
             db.execute(f"ALTER TABLE users ADD COLUMN {col} {dtype}")
