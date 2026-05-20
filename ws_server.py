@@ -114,10 +114,14 @@ def handle_connection(sock, headers, client_addr):
                     ok, err = _check_version(jock_version)
                     if not ok:
                         _send_ws(sock, json.dumps({"type": "auth_error", "error": err, "update_url": UPDATE_URL}))
+                        print(f"[ws] Rejected client: no version / too old", flush=True)
+                        _close_ws(sock)
                         return
                     ok, err = _check_db_schema(jock_db_schema)
                     if not ok:
                         _send_ws(sock, json.dumps({"type": "auth_error", "error": err}))
+                        print(f"[ws] Rejected client: DB schema mismatch", flush=True)
+                        _close_ws(sock)
                         return
                     with _auth_codes_lock:
                         discord_id = _auth_codes.pop(code, None)
@@ -134,6 +138,7 @@ def handle_connection(sock, headers, client_addr):
                         print(f"[ws] Client auth_code: {discord_id}", flush=True)
                     else:
                         _send_ws(sock, json.dumps({"type": "auth_error", "error": "Invalid code"}))
+                        _close_ws(sock)
                         return
                 elif msg_type == "sync_inventory" and discord_id:
                     action = data.get("action", "")
@@ -193,6 +198,17 @@ def _send_ws(sock, text):
         frame.extend(struct.pack("!Q", len(data)))
     frame.extend(data)
     sock.sendall(bytes(frame))
+
+
+def _close_ws(sock):
+    """Send a WebSocket close frame and flush."""
+    import struct
+    frame = bytearray()
+    frame.append(0x88)  # fin + close opcode
+    frame.append(0x00)  # no payload
+    sock.sendall(bytes(frame))
+    import time
+    time.sleep(0.05)
 
 
 async def _handler(websocket):
