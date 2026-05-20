@@ -7,7 +7,7 @@ from pathlib import Path
 
 _DSN = os.environ.get("SHOWER_DB", str(Path(__file__).resolve().parent / "shower_data" / "shower.db"))
 _IS_MYSQL = _DSN.startswith("mysql://")
-_IS_ODBC = not _IS_MYSQL and ("=" in _DSN and "Driver" in _DSN)
+_IS_ODBC = not _IS_MYSQL and ("Driver=" in _DSN or "driver=" in _DSN)
 _local = threading.local()
 _write_lock = threading.RLock()
 
@@ -36,7 +36,18 @@ def _new_conn():
         )
     if _IS_ODBC:
         import pyodbc
-        return pyodbc.connect(_DSN, autocommit=False)
+        # Check available drivers for diagnostics
+        try:
+            return pyodbc.connect(_DSN, autocommit=False)
+        except pyodbc.InterfaceError as e:
+            import sys
+            print(f"[db] ODBC connection failed: {e}", flush=True)
+            try:
+                drivers = pyodbc.drivers()
+                print(f"[db] Available ODBC drivers: {drivers}", flush=True)
+            except Exception:
+                pass
+            raise
 
 def get_db():
     if _IS_MYSQL:
@@ -970,7 +981,8 @@ def set_dsn(dsn):
     _DSN = dsn
     DB_PATH = dsn
     _IS_MYSQL = dsn.startswith("mysql://")
-    _IS_ODBC = not _IS_MYSQL and ("=" in dsn and "Driver" in dsn)
+    _IS_ODBC = not _IS_MYSQL and ("Driver=" in dsn or "driver=" in dsn)
+    print(f"[db] DSN type: {'MySQL' if _IS_MYSQL else 'ODBC' if _IS_ODBC else 'SQLite'}", flush=True)
     if _IS_MYSQL:
         import pymysql
         _pool = queue.Queue(maxsize=20)
