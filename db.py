@@ -579,11 +579,15 @@ def _assign_user_role(discord_id, role_ids):
 def get_user_by_session(session_id):
     db = get_db()
     try:
-        row = db.execute(f"""SELECT u.*, COALESCE(r.level, 1) AS role_level FROM users u
+        sql = f"""SELECT u.*, COALESCE(r.level, 1) AS role_level FROM users u
             JOIN sessions s ON u.discord_id = s.discord_id
             LEFT JOIN roles r ON u.role_id = r.id
-            WHERE s.session_id={Q} AND (s.expires_at IS NULL OR s.expires_at > {NOW})""",
-            (session_id,)).fetchone()
+            WHERE s.session_id={Q} AND (s.expires_at IS NULL OR s.expires_at > {NOW})"""
+        if _IS_ODBC:
+            print(f"[db] get_user_by_session: {session_id[:16]}...", flush=True)
+        row = db.execute(sql, (session_id,)).fetchone()
+        if _IS_ODBC:
+            print(f"[db] get_user_by_session: {'found' if row else 'NOT FOUND'}", flush=True)
     except Exception as e:
         print(f"[db] get_user_by_session error: {e}", flush=True)
         row = None
@@ -596,8 +600,11 @@ def get_user_by_session(session_id):
 @write_db
 def create_session(session_id, discord_id, ttl):
     db = get_db()
-    db.execute(f"INSERT INTO sessions (session_id, discord_id, expires_at) VALUES ({Q}, {Q}, {NOW_N(ttl)})",
-               (session_id, discord_id))
+    sql = f"INSERT INTO sessions (session_id, discord_id, expires_at) VALUES ({Q}, {Q}, {NOW_N(ttl)})"
+    print(f"[db] create_session: {session_id[:16]}... discord={discord_id[:16]}... ttl={ttl}", flush=True)
+    if _IS_ODBC:
+        print(f"[db] create_session SQL: {sql}", flush=True)
+    db.execute(sql, (session_id, discord_id))
 
 
 @write_db
