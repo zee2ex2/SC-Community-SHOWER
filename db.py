@@ -146,18 +146,21 @@ def init_db():
         PKI = "INT IDENTITY(1,1) PRIMARY KEY"
         CT = "GETDATE()"
         TS = "DATETIME2"
+        CTIF = "CREATE TABLE"
     elif _IS_MYSQL:
         AI = "AUTO_INCREMENT"
         PKI = f"INTEGER PRIMARY KEY {AI}"
         CT = "CURRENT_TIMESTAMP"
         TS = "TIMESTAMP"
+        CTIF = "CREATE TABLE IF NOT EXISTS"
     else:
         AI = "AUTOINCREMENT"
         PKI = f"INTEGER PRIMARY KEY {AI}"
         CT = "CURRENT_TIMESTAMP"
         TS = "TIMESTAMP"
+        CTIF = "CREATE TABLE IF NOT EXISTS"
     schema = f"""
-    CREATE TABLE IF NOT EXISTS users (
+    {CTIF} users (
         discord_id VARCHAR(64) PRIMARY KEY,
         discord_tag VARCHAR(128),
         username VARCHAR(128),
@@ -170,27 +173,27 @@ def init_db():
         is_admin INTEGER DEFAULT 0,
         created_at {TS} DEFAULT {CT}
     );
-    CREATE TABLE IF NOT EXISTS sessions (
+    {CTIF} sessions (
         session_id VARCHAR(64) PRIMARY KEY,
         discord_id VARCHAR(64) NOT NULL,
         expires_at {TS},
         created_at {TS} DEFAULT {CT}
     );
-    CREATE TABLE IF NOT EXISTS items (
+    {CTIF} items (
         id {PKI},
         name VARCHAR(255) UNIQUE NOT NULL,
         category TEXT DEFAULT ''
     );
-    CREATE TABLE IF NOT EXISTS systems (
+    {CTIF} systems (
         id {PKI},
         name VARCHAR(255) UNIQUE NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS stations (
+    {CTIF} stations (
         id {PKI},
         name VARCHAR(255) UNIQUE NOT NULL,
         system_id INTEGER
     );
-    CREATE TABLE IF NOT EXISTS community_inventory (
+    {CTIF} community_inventory (
         id {PKI},
         discord_id VARCHAR(64) NOT NULL,
         item_name VARCHAR(255) NOT NULL,
@@ -199,7 +202,7 @@ def init_db():
         station TEXT DEFAULT '',
         synced_at {TS} DEFAULT {CT}
     );
-    CREATE TABLE IF NOT EXISTS order_requests (
+    {CTIF} order_requests (
         id {PKI},
         discord_id VARCHAR(64) NOT NULL,
         item_name VARCHAR(255) NOT NULL,
@@ -211,7 +214,7 @@ def init_db():
         created_at {TS} DEFAULT {CT},
         fulfilled_at {TS}
     );
-    CREATE TABLE IF NOT EXISTS notifications (
+    {CTIF} notifications (
         id {PKI},
         discord_id VARCHAR(64) NOT NULL,
         title TEXT NOT NULL,
@@ -220,7 +223,7 @@ def init_db():
         read INTEGER DEFAULT 0,
         created_at {TS} DEFAULT {CT}
     );
-    CREATE TABLE IF NOT EXISTS sync_log (
+    {CTIF} sync_log (
         id {PKI},
         discord_id VARCHAR(64),
         direction TEXT,
@@ -228,11 +231,11 @@ def init_db():
         message TEXT,
         synced_at {TS} DEFAULT {CT}
     );
-    CREATE TABLE IF NOT EXISTS config (
+    {CTIF} config (
         key VARCHAR(255) PRIMARY KEY,
         value TEXT
     );
-    CREATE TABLE IF NOT EXISTS api_keys (
+    {CTIF} api_keys (
         key VARCHAR(64) PRIMARY KEY,
         discord_id VARCHAR(64) NOT NULL,
         label TEXT DEFAULT '',
@@ -240,13 +243,13 @@ def init_db():
         expires_at {TS},
         created_at {TS} DEFAULT {CT}
     );
-    CREATE TABLE IF NOT EXISTS client_tokens (
+    {CTIF} client_tokens (
         token VARCHAR(64) PRIMARY KEY,
         discord_id VARCHAR(64) NOT NULL,
         created_at {TS} DEFAULT {CT},
         expires_at {TS} NOT NULL
     );
-    CREATE TABLE IF NOT EXISTS roles (
+    {CTIF} roles (
         id {PKI},
         name VARCHAR(255) UNIQUE NOT NULL,
         level INTEGER NOT NULL DEFAULT 1,
@@ -254,7 +257,7 @@ def init_db():
         is_env INTEGER DEFAULT 0,
         created_at {TS} DEFAULT {CT}
     );
-    CREATE TABLE IF NOT EXISTS itemcategory (
+    {CTIF} itemcategory (
         id {PKI},
         name VARCHAR(255) NOT NULL,
         parent_id INTEGER DEFAULT 0
@@ -278,20 +281,21 @@ def init_db():
 
 
 def _migrate():
+    AC = "ADD" if _IS_ODBC else "ADD COLUMN"
     cols_i = _cols("items")
     if "hasquality" not in cols_i:
         db = get_db()
-        db.execute(f"ALTER TABLE items ADD COLUMN hasquality INTEGER DEFAULT 0")
+        db.execute(f"ALTER TABLE items {AC} hasquality INTEGER DEFAULT 0")
         db.commit()
         _put_db(db)
     if "code" not in cols_i:
         db = get_db()
-        db.execute(f"ALTER TABLE items ADD COLUMN code TEXT DEFAULT ''")
+        db.execute(f"ALTER TABLE items {AC} code TEXT DEFAULT ''")
         db.commit()
         _put_db(db)
     if "catid" not in cols_i:
         db = get_db()
-        db.execute(f"ALTER TABLE items ADD COLUMN catid INTEGER DEFAULT 1")
+        db.execute(f"ALTER TABLE items {AC} catid INTEGER DEFAULT 1")
         db.commit()
         _put_db(db)
 
@@ -300,14 +304,14 @@ def _migrate():
     for col, dtype in [("display_name", "TEXT"), ("role_id", "INTEGER"), ("banned", "INTEGER DEFAULT 0"), ("last_seen", ts_type)]:
         if col not in cols_u:
             db = get_db()
-            db.execute(f"ALTER TABLE users ADD COLUMN {col} {dtype}")
+            db.execute(f"ALTER TABLE users {AC} {col} {dtype}")
             db.commit()
             _put_db(db)
 
     cols_n = _cols("notifications")
     if "dm_sent" not in cols_n:
         db = get_db()
-        db.execute(f"ALTER TABLE notifications ADD COLUMN dm_sent INTEGER DEFAULT 0")
+        db.execute(f"ALTER TABLE notifications {AC} dm_sent INTEGER DEFAULT 0")
         db.commit()
         _put_db(db)
 
