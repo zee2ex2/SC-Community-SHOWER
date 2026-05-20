@@ -20,10 +20,12 @@ if _IS_MYSQL:
     _pool = queue.Queue(maxsize=20)
     _pool_lock = threading.Lock()
 elif _IS_ODBC:
-    import pyodbc
+    _pool = None
+    _pool_lock = None
 
 def _new_conn():
     if _IS_MYSQL:
+        import pymysql
         import urllib.parse
         p = urllib.parse.urlparse(_DSN)
         return pymysql.connect(
@@ -33,6 +35,7 @@ def _new_conn():
             charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor, autocommit=False,
         )
     if _IS_ODBC:
+        import pyodbc
         return pyodbc.connect(_DSN, autocommit=False)
 
 def get_db():
@@ -983,6 +986,7 @@ def set_dsn(dsn):
         EXCLUDED = lambda col: f"VALUES({col})"
         LIMIT_CLAUSE = lambda p: f"LIMIT {p}"
     elif _IS_ODBC:
+        import pyodbc
         _pool = None
         _pool_lock = None
         Q = "?"
