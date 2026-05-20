@@ -86,7 +86,7 @@ def base_html(title, content, user=None, notif_count=0):
 <div><h1>Sho.W.E.R</h1><p class="network-info">{esc(GUILD_NAME)}</p></div>
 <nav class="nav-links">{nav}<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">&#x263E;</button></nav>
     </header>
-    {notice_html("")}
+    {notice_html({})}
     <main>{content}</main>
 <footer class="footer">
   <span>Community Shopfront &middot; Workorder &middot; Exchange Registry — {esc(GUILD_NAME)}</span>
