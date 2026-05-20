@@ -344,6 +344,28 @@ def _migrate():
             print(f"[db] migrate notifications.dm_sent: {e}", flush=True)
         _put_db(db)
 
+    # Fix sessions.expires_at type for ODBC (TIMESTAMP→ROWVERSION workaround)
+    if _IS_ODBC:
+        cols_s = _cols("sessions")
+        if cols_s and "expires_at" in cols_s:
+            db = get_db()
+            try:
+                # Check actual data type
+                row = db.execute("SELECT system_type_id FROM sys.columns WHERE object_id=OBJECT_ID('sessions') AND name='expires_at'").fetchone()
+                if row and row[0] == 189:  # 189 = TIMESTAMP/ROWVERSION
+                    db.execute("DROP TABLE sessions")
+                    db.execute(f"""CREATE TABLE sessions (
+                        session_id VARCHAR(64) PRIMARY KEY,
+                        discord_id VARCHAR(64) NOT NULL,
+                        expires_at DATETIME2,
+                        created_at DATETIME2 DEFAULT GETDATE()
+                    )""")
+                    db.commit()
+                    print(f"[db] Recreated sessions table with DATETIME2 expires_at", flush=True)
+            except Exception as e:
+                print(f"[db] migrate sessions.expires_at: {e}", flush=True)
+            _put_db(db)
+
     # Seed itemcategory
     db = get_db()
     row = db.execute(f"SELECT COUNT(*) AS cnt FROM itemcategory").fetchone()
