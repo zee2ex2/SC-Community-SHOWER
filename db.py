@@ -344,27 +344,22 @@ def _migrate():
             print(f"[db] migrate notifications.dm_sent: {e}", flush=True)
         _put_db(db)
 
-    # Fix sessions.expires_at type for ODBC (TIMESTAMP→ROWVERSION workaround)
+    # Fix sessions table for ODBC: ensure DATETIME2, not ROWVERSION
     if _IS_ODBC:
-        cols_s = _cols("sessions")
-        if cols_s and "expires_at" in cols_s:
-            db = get_db()
-            try:
-                expires_val = db.execute("SELECT expires_at FROM sessions WHERE expires_at IS NOT NULL", ()).fetchone()
-                # If expires_at is ROWVERSION, it would be binary data, not a datetime
-                # Just drop and recreate the table to be safe
-                db.execute("DROP TABLE sessions")
-                db.execute(f"""CREATE TABLE sessions (
-                    session_id VARCHAR(64) PRIMARY KEY,
-                    discord_id VARCHAR(64) NOT NULL,
-                    expires_at DATETIME2,
-                    created_at DATETIME2 DEFAULT GETDATE()
-                )""")
-                db.commit()
-                print(f"[db] Recreated sessions table with correct DATETIME2", flush=True)
-            except Exception as e:
-                print(f"[db] migrate sessions.expires_at: {e}", flush=True)
-            _put_db(db)
+        db = get_db()
+        try:
+            db.execute("DROP TABLE IF EXISTS sessions")
+            db.execute(f"""CREATE TABLE sessions (
+                session_id VARCHAR(64) PRIMARY KEY,
+                discord_id VARCHAR(64) NOT NULL,
+                expires_at DATETIME2,
+                created_at DATETIME2 DEFAULT GETDATE()
+            )""")
+            db.commit()
+            print(f"[db] Sessions table created with DATETIME2", flush=True)
+        except Exception as e:
+            print(f"[db] recreate sessions: {e}", flush=True)
+        _put_db(db)
 
     # Seed itemcategory
     db = get_db()
