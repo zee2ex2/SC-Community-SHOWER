@@ -1041,7 +1041,7 @@ def set_dsn(dsn):
         NOW_M = lambda d: f"DATEADD(DAY, -{d}, GETDATE())"
         IGNORE = "INSERT"
         LASTID = "CAST(COALESCE(SCOPE_IDENTITY(), @@IDENTITY) AS BIGINT)"
-        COLINFO = lambda t: f"SELECT COLUMN_NAME AS name FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{t}'"
+        COLINFO = lambda t: f"SELECT c.name FROM sys.columns c JOIN sys.tables t ON c.object_id=t.object_id WHERE t.name='{t}'"
         UPSERT = lambda t, p: ""
         EXCLUDED = lambda col: f"EXCLUDED.{col}"
         LIMIT_CLAUSE = lambda p: f"OFFSET 0 ROWS FETCH NEXT {p} ROWS ONLY"
