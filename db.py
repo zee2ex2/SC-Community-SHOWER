@@ -556,11 +556,15 @@ def _assign_user_role(discord_id, role_ids):
 
 def get_user_by_session(session_id):
     db = get_db()
-    row = db.execute(f"""SELECT u.*, COALESCE(r.level, 1) AS role_level FROM users u
-        JOIN sessions s ON u.discord_id = s.discord_id
-        LEFT JOIN roles r ON u.role_id = r.id
-        WHERE s.session_id={Q} AND (s.expires_at IS NULL OR s.expires_at > {NOW})""",
-        (session_id,)).fetchone()
+    try:
+        row = db.execute(f"""SELECT u.*, COALESCE(r.level, 1) AS role_level FROM users u
+            JOIN sessions s ON u.discord_id = s.discord_id
+            LEFT JOIN roles r ON u.role_id = r.id
+            WHERE s.session_id={Q} AND (s.expires_at IS NULL OR s.expires_at > {NOW})""",
+            (session_id,)).fetchone()
+    except Exception as e:
+        print(f"[db] get_user_by_session error: {e}", flush=True)
+        row = None
     _put_db(db)
     return row
 

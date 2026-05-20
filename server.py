@@ -125,6 +125,14 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_static(BASE_DIR / "static" / "shower.js", "application/javascript; charset=utf-8")
             return
 
+        if path == "/db-status":
+            backend = "MySQL" if db._IS_MYSQL else "ODBC/SQL Server" if db._IS_ODBC else "SQLite"
+            self.respond(f"""<html><body><h1>Database Status</h1>
+<pre>Backend: {backend}
+DSN: {db._DSN}
+</pre><p><a href="/">Home</a></p></body></html>""")
+            return
+
         if path == "/events":
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/event-stream")
