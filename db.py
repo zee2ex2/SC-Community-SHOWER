@@ -94,7 +94,7 @@ elif _IS_ODBC:
     NOW_M = lambda d: f"DATEADD(DAY, -{d}, GETDATE())"
     IGNORE = "INSERT"  # SQL Server: bare INSERT (no IGNORE); gated by existence checks
     LASTID = "CAST(COALESCE(SCOPE_IDENTITY(), @@IDENTITY) AS BIGINT)"
-    COLINFO = lambda t: f"SELECT COLUMN_NAME AS name FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME='{t}'"
+    COLINFO = lambda t: f"SELECT c.name FROM sys.columns c JOIN sys.tables t ON c.object_id=t.object_id WHERE t.name='{t}'"
     UPSERT = lambda t, p: ""  # Not used in ODBC path
     EXCLUDED = lambda col: f"EXCLUDED.{col}"
     LIMIT_CLAUSE = lambda p: f"OFFSET 0 ROWS FETCH NEXT {p} ROWS ONLY"
@@ -350,18 +350,18 @@ def _migrate():
         if cols_s and "expires_at" in cols_s:
             db = get_db()
             try:
-                # Check actual data type
-                row = db.execute("SELECT system_type_id FROM sys.columns WHERE object_id=OBJECT_ID('sessions') AND name='expires_at'").fetchone()
-                if row and row[0] == 189:  # 189 = TIMESTAMP/ROWVERSION
-                    db.execute("DROP TABLE sessions")
-                    db.execute(f"""CREATE TABLE sessions (
-                        session_id VARCHAR(64) PRIMARY KEY,
-                        discord_id VARCHAR(64) NOT NULL,
-                        expires_at DATETIME2,
-                        created_at DATETIME2 DEFAULT GETDATE()
-                    )""")
-                    db.commit()
-                    print(f"[db] Recreated sessions table with DATETIME2 expires_at", flush=True)
+                expires_val = db.execute("SELECT expires_at FROM sessions WHERE expires_at IS NOT NULL", ()).fetchone()
+                # If expires_at is ROWVERSION, it would be binary data, not a datetime
+                # Just drop and recreate the table to be safe
+                db.execute("DROP TABLE sessions")
+                db.execute(f"""CREATE TABLE sessions (
+                    session_id VARCHAR(64) PRIMARY KEY,
+                    discord_id VARCHAR(64) NOT NULL,
+                    expires_at DATETIME2,
+                    created_at DATETIME2 DEFAULT GETDATE()
+                )""")
+                db.commit()
+                print(f"[db] Recreated sessions table with correct DATETIME2", flush=True)
             except Exception as e:
                 print(f"[db] migrate sessions.expires_at: {e}", flush=True)
             _put_db(db)
