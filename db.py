@@ -574,15 +574,23 @@ def _assign_user_role(discord_id, role_ids):
 def get_user_by_session(session_id):
     db = get_db()
     try:
+        if _IS_ODBC:
+            # Check session directly without JOIN
+            s_row = db.execute(f"SELECT session_id, discord_id, expires_at FROM sessions WHERE session_id={Q}", (session_id,)).fetchone()
+            if s_row:
+                print(f"[db] session found: discord_id={s_row[1][:16] if len(s_row)>1 else '?'}...", flush=True)
+                # Check if user exists
+                u_row = db.execute(f"SELECT discord_id, role_id FROM users WHERE discord_id={Q}", (s_row[1],)).fetchone()
+                print(f"[db] user found: {bool(u_row)}, role_id={u_row[1] if u_row else 'N/A'}", flush=True)
+            else:
+                print(f"[db] session NOT FOUND in direct query", flush=True)
         sql = f"""SELECT u.*, COALESCE(r.level, 1) AS role_level FROM users u
             JOIN sessions s ON u.discord_id = s.discord_id
             LEFT JOIN roles r ON u.role_id = r.id
             WHERE s.session_id={Q} AND (s.expires_at IS NULL OR s.expires_at > {NOW})"""
-        if _IS_ODBC:
-            print(f"[db] get_user_by_session: {session_id[:16]}...", flush=True)
         row = db.execute(sql, (session_id,)).fetchone()
         if _IS_ODBC:
-            print(f"[db] get_user_by_session: {'found' if row else 'NOT FOUND'}", flush=True)
+            print(f"[db] get_user_by_session join: {'found' if row else 'NOT FOUND'}", flush=True)
     except Exception as e:
         print(f"[db] get_user_by_session error: {e}", flush=True)
         row = None
