@@ -19,11 +19,13 @@ if env_path.exists():
         key, _, val = line.partition('=')
         os.environ.setdefault(key.strip(), val.strip())
 
+import api_lib
 import auth
 import bot
 import db
 import render
 import ws_server
+from db import Q
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "9200"))
@@ -234,16 +236,10 @@ class Handler(BaseHTTPRequestHandler):
             if not item_name:
                 self.redirect("/my-inventory?error=missing_name")
                 return
-            row_id, err = db.add_my_inventory(user["discord_id"], item_name, quality, quantity, station)
+            row_id, err = api_lib.add_inventory(user, item_name, quality, quantity, station)
             if err:
                 self.redirect(f"/my-inventory?error={urllib.parse.quote(err)}")
                 return
-            self._push_to_pits(user, "add", {
-                "item_name": item_name,
-                "quality": quality,
-                "quantity_scu": quantity,
-                "station": station,
-            })
             self.redirect("/my-inventory?created=1")
             return
 
@@ -255,15 +251,7 @@ class Handler(BaseHTTPRequestHandler):
             if not inv_id:
                 self.redirect("/my-inventory?error=missing_id")
                 return
-            item = db.get_inventory_item(user["discord_id"], inv_id)
-            if item:
-                self._push_to_pits(user, "delete", {
-                    "item_name": item["item_name"],
-                    "quality": item["quality"],
-                    "quantity_scu": item["quantity_scu"],
-                    "station": item["station"] or "",
-                })
-            db.delete_inventory_item(user["discord_id"], inv_id)
+            api_lib.delete_inventory(user, inv_id)
             self.redirect("/my-inventory?deleted=1")
             return
 
@@ -272,24 +260,67 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_api(self, method, path, qs, data):
         user = self._get_request_user()
 
+        # ─── v1 API ────────────────────────────────────────────────────
+
+        if path == "/api/v1/inventory":
+            if not user:
+                self.respond_json({"ok": False, "error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED)
+                return
+            if method == "GET":
+                items = api_lib.get_inventory(user)
+                result = []
+                for item in items:
+                    result.append({
+                        "id": item["id"], "item_name": item["item_name"],
+                        "quality": item["quality"], "quantity_scu": item["quantity_scu"],
+                        "station": item["station"], "synced_at": item["synced_at"],
+                    })
+                self.respond_json({"ok": True, "data": result})
+                return
+            elif method == "POST":
+                item_name = data.get("item_name", "").strip()
+                quality = int(data.get("quality", 100))
+                quantity_scu = float(data.get("quantity_scu", 1.0))
+                station = data.get("station", "").strip()
+                if not item_name:
+                    self.respond_json({"ok": False, "error": "Missing item_name"}, HTTPStatus.BAD_REQUEST)
+                    return
+                row_id, err = api_lib.add_inventory(user, item_name, quality, quantity_scu, station)
+                if err:
+                    self.respond_json({"ok": False, "error": err}, HTTPStatus.BAD_REQUEST)
+                    return
+                self.respond_json({"ok": True, "data": {"id": row_id}})
+                return
+            elif method == "DELETE":
+                inv_id = data.get("id", "")
+                if not inv_id:
+                    self.respond_json({"ok": False, "error": "Missing id"}, HTTPStatus.BAD_REQUEST)
+                    return
+                ok, err = api_lib.delete_inventory(user, inv_id)
+                if not ok:
+                    self.respond_json({"ok": False, "error": err},
+                                      HTTPStatus.NOT_FOUND if "not found" in err else HTTPStatus.BAD_REQUEST)
+                    return
+                self.respond_json({"ok": True})
+                return
+
+        # ─── Legacy /api/inventory/sync (backward compat) ──────────────
+
         if path == "/api/inventory/sync" and method == "POST":
             if not user:
                 self.respond_json({"error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED)
                 return
-            discord_id = user["discord_id"]
-            item_name = data.get("item_name", "")
-            quality = data.get("quality", 100)
-            quantity_scu = data.get("quantity_scu", 1.0)
-            station = data.get("station", "")
+            item_name = data.get("item_name", "").strip()
+            quality = int(data.get("quality", 100))
+            quantity_scu = float(data.get("quantity_scu", 1.0))
+            station = data.get("station", "").strip()
             if not item_name:
                 self.respond_json({"error": "Missing item_name"}, HTTPStatus.BAD_REQUEST)
                 return
-            result = db.sync_inventory(discord_id, item_name, quality, quantity_scu, station)
-            if not result.get("ok"):
-                self.respond_json({"error": result.get("error", "Sync rejected")}, HTTPStatus.BAD_REQUEST)
+            row_id, err = api_lib.add_inventory(user, item_name, quality, quantity_scu, station)
+            if err:
+                self.respond_json({"error": err}, HTTPStatus.BAD_REQUEST)
                 return
-            db.log_sync(discord_id, "push", "ok", f"Synced {item_name} Q{quality} x{quantity_scu}")
-            self._check_order_match(discord_id, item_name, quality)
             self.respond_json({"status": "ok"})
             return
 
@@ -297,32 +328,29 @@ class Handler(BaseHTTPRequestHandler):
             if not user:
                 self.respond_json({"error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED)
                 return
-            discord_id = user["discord_id"]
             item_name = data.get("item_name", "")
             quality = int(data.get("quality", 100))
-            quantity_scu = float(data.get("quantity_scu", 0))
             station = data.get("station", "")
             if not item_name:
                 self.respond_json({"error": "Missing item_name"}, HTTPStatus.BAD_REQUEST)
                 return
+            discord_id = user["discord_id"]
             row = db.get_db().execute(
-                "SELECT id FROM community_inventory WHERE discord_id=? AND item_name=? AND quality=? AND station=?",
+                f"SELECT id FROM community_inventory WHERE discord_id={Q} AND item_name={Q} AND quality={Q} AND station={Q}",
                 (discord_id, item_name, quality, station)
             ).fetchone()
-            if row:
-                db.delete_inventory_item(discord_id, row["id"])
-                db.log_sync(discord_id, "push", "ok", f"Deleted {item_name}")
-                self.respond_json({"status": "ok"})
-            else:
+            if not row:
                 self.respond_json({"error": "No matching inventory found"}, HTTPStatus.NOT_FOUND)
+                return
+            api_lib.delete_inventory(user, row["id"])
+            self.respond_json({"status": "ok"})
             return
 
         if path == "/api/inventory/sync" and method == "GET":
             if not user:
                 self.respond_json({"error": "Unauthorized"}, HTTPStatus.UNAUTHORIZED)
                 return
-            discord_id = user["discord_id"]
-            items = db.get_user_inventory(discord_id)
+            items = api_lib.get_inventory(user)
             result = []
             for item in items:
                 result.append({
@@ -331,7 +359,6 @@ class Handler(BaseHTTPRequestHandler):
                     "station": item["station"], "synced_at": item["synced_at"],
                 })
             self.respond_json(result)
-            db.log_sync(discord_id, "pull", "ok", f"Pulled {len(result)} items")
             return
 
         if path == "/api/notifications" and method == "GET":
@@ -470,38 +497,6 @@ class Handler(BaseHTTPRequestHandler):
 
         self.respond_json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
 
-    def _check_order_match(self, discord_id, item_name, quality):
-        orders = db.get_open_orders()
-        for o in orders:
-            if o["item_name"].lower() == item_name.lower() and quality >= o["min_quality"]:
-                if o["discord_id"] != discord_id:
-                    db._add_notification(
-                        o["discord_id"],
-                        "Item Available",
-                        f"Someone added {item_name} (Q{quality}) to their inventory, matching your order request.",
-                        "order",
-                    )
-
-    def _push_to_pits(self, user, action, data):
-        item_name = data.get("item_name", "")
-        station = data.get("station", "")
-        itemid = ""
-        stationid = ""
-        if item_name:
-            row = db.get_db().execute("SELECT id FROM items WHERE name=?", (item_name,)).fetchone()
-            if row: itemid = str(row["id"])
-        if station:
-            row = db.get_db().execute("SELECT id FROM stations WHERE name=?", (station,)).fetchone()
-            if row: stationid = str(row["id"])
-        msg = {"type": "push_inventory", "action": action,
-               "itemid": itemid, "item_name": item_name,
-               "quality": data.get("quality", ""),
-               "quantity_scu": data.get("quantity_scu", ""),
-               "stationid": stationid, "station": station}
-        sent = ws_server.send(user["discord_id"], msg)
-        if not sent:
-            print(f"[push] No WS connection for {user['discord_id']}", flush=True)
-
     def _handle_jock_login(self, qs):
         redirect_uri = qs.get("redirect_uri", "")
         if not redirect_uri:
@@ -603,7 +598,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         user = db.get_user_by_session(sid.value)
         if user:
-            db.get_db().execute("DELETE FROM client_tokens WHERE discord_id=?", (user["discord_id"],))
+            db.get_db().execute(f"DELETE FROM client_tokens WHERE discord_id={Q}", (user["discord_id"],))
             db.get_db().commit()
             ws_server.close(user["discord_id"])
         db.delete_session(sid.value)
@@ -692,7 +687,7 @@ class Handler(BaseHTTPRequestHandler):
             if not target_id or not role_id:
                 self.redirect("/admin?error=missing_fields")
                 return
-            target = db.get_db().execute("SELECT * FROM users WHERE discord_id=?", (target_id,)).fetchone()
+            target = db.get_db().execute(f"SELECT * FROM users WHERE discord_id={Q}", (target_id,)).fetchone()
             if not target:
                 self.redirect("/admin?error=user_not_found")
                 return
@@ -719,7 +714,7 @@ class Handler(BaseHTTPRequestHandler):
             db.set_user_banned(target_id, banned)
             self.redirect("/admin?saved=1")
 
-        elif action == "clear_user_token":
+        elif action == "clear_user_api_keys":
             if level < 2:
                 self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
                 return
@@ -727,7 +722,7 @@ class Handler(BaseHTTPRequestHandler):
             if not target_id:
                 self.redirect("/admin?error=missing_id")
                 return
-            db.clear_user_token(target_id)
+            db.clear_user_api_keys(target_id)
             self.redirect("/admin?saved=1")
 
         elif action == "delete_user":
@@ -747,14 +742,22 @@ class Handler(BaseHTTPRequestHandler):
                 return
             name = data.get("name", "").strip()
             item_id = data.get("item_id", "").strip()
-            if not name or not item_id:
-                self.redirect("/admin?error=missing_fields")
+            hasquality = 1 if data.get("hasquality") == "1" else 0
+            code = data.get("code", "")
+            catid = int(data.get("catid", 1))
+            if not name:
+                self.redirect("/admin?error=missing_name")
                 return
-            existing = db.get_db().execute("SELECT id FROM items WHERE id=? OR name=?", (item_id, name)).fetchone()
-            if existing:
-                self.redirect("/admin?error=id_or_name_taken")
-                return
-            db.get_db().execute("INSERT INTO items (id, name) VALUES (?, ?)", (int(item_id), name))
+            if item_id:
+                existing = db.get_db().execute(f"SELECT id FROM items WHERE id={Q} OR name={Q}", (item_id, name)).fetchone()
+                if existing:
+                    self.redirect("/admin?error=id_or_name_taken")
+                    return
+                db.get_db().execute(f"INSERT INTO items (id, name, hasquality, code, catid) VALUES ({Q}, {Q}, {Q}, {Q}, {Q})",
+                                    (int(item_id), name, hasquality, code, catid))
+            else:
+                db.get_db().execute(f"INSERT INTO items (name, hasquality, code, catid) VALUES ({Q}, {Q}, {Q}, {Q})",
+                                    (name, hasquality, code, catid))
             db.get_db().commit()
             self.redirect("/admin?saved=1")
 
@@ -778,11 +781,11 @@ class Handler(BaseHTTPRequestHandler):
             if not name or not station_id:
                 self.redirect("/admin?error=missing_fields")
                 return
-            existing = db.get_db().execute("SELECT id FROM stations WHERE id=? OR name=?", (station_id, name)).fetchone()
+            existing = db.get_db().execute(f"SELECT id FROM stations WHERE id={Q} OR name={Q}", (station_id, name)).fetchone()
             if existing:
                 self.redirect("/admin?error=id_or_name_taken")
                 return
-            db.get_db().execute("INSERT INTO stations (id, name) VALUES (?, ?)", (int(station_id), name))
+            db.get_db().execute(f"INSERT INTO stations (id, name) VALUES ({Q}, {Q})", (int(station_id), name))
             db.get_db().commit()
             self.redirect("/admin?saved=1")
 
@@ -822,6 +825,27 @@ class Handler(BaseHTTPRequestHandler):
             cid = os.environ.get("DISCORD_CLIENT_ID", "")
             invite_url = f"https://discord.com/api/oauth2/authorize?client_id={cid}&permissions=0&scope=bot"
             self.redirect(invite_url)
+
+        elif action == "reset_db":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            db.reset_database()
+            self.redirect("/admin?saved=1")
+
+        elif action == "change_db":
+            if level < 3:
+                self.respond_json({"error": "Access denied"}, HTTPStatus.FORBIDDEN)
+                return
+            new_dsn = data.get("dsn", "").strip()
+            if not new_dsn:
+                self.redirect("/admin?error=missing_dsn")
+                return
+            try:
+                db.set_dsn(new_dsn)
+                self.redirect("/admin?saved=1")
+            except Exception as e:
+                self.redirect(f"/admin?error={urllib.parse.quote(str(e))}")
 
         else:
             self.redirect("/admin?error=unknown_action")

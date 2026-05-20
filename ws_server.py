@@ -5,6 +5,34 @@ import time
 import websockets
 
 import db
+from db import Q
+
+MIN_JOCK_VERSION = "1.2.0"
+UPDATE_URL = "https://github.com/zee2ex2/SC-PITS-JOCKstrap-Extension/releases"
+
+
+def _parse_version(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except (ValueError, AttributeError):
+        return (0,)
+
+
+def _check_version(jock_version):
+    if not jock_version:
+        return False, f"JOCKstrap too old. Please update to v{MIN_JOCK_VERSION}+."
+    if _parse_version(jock_version) < _parse_version(MIN_JOCK_VERSION):
+        return False, f"JOCKstrap too old. Please update to v{MIN_JOCK_VERSION}+."
+    return True, ""
+
+
+def _check_db_schema(jock_db_schema):
+    if not jock_db_schema:
+        return True, ""
+    server_schema = db.get_schema_version()
+    if server_schema < jock_db_schema:
+        return False, f"Server database too old for this JOCKstrap. Contact admin to update SHOWER."
+    return True, ""
 
 _connections = {}
 _connections_lock = threading.Lock()
@@ -81,16 +109,27 @@ def handle_connection(sock, headers, client_addr):
                 msg_type = data.get("type", "")
                 if msg_type == "auth_code":
                     code = data.get("code", "")
+                    jock_version = data.get("jock_version", "")
+                    jock_db_schema = data.get("jock_db_schema", 0)
+                    ok, err = _check_version(jock_version)
+                    if not ok:
+                        _send_ws(sock, json.dumps({"type": "auth_error", "error": err, "update_url": UPDATE_URL}))
+                        return
+                    ok, err = _check_db_schema(jock_db_schema)
+                    if not ok:
+                        _send_ws(sock, json.dumps({"type": "auth_error", "error": err}))
+                        return
                     with _auth_codes_lock:
                         discord_id = _auth_codes.pop(code, None)
                     if discord_id:
                         with _connections_lock:
                             _connections[discord_id] = sock
                         user = db.get_db().execute(
-                            "SELECT discord_id, discord_tag, username, display_name FROM users WHERE discord_id=?",
+                            f"SELECT discord_id, discord_tag, username, display_name FROM users WHERE discord_id={Q}",
                             (discord_id,)
                         ).fetchone()
                         info = dict(user) if user else {}
+                        info["server_schema_version"] = db.get_schema_version()
                         _send_ws(sock, json.dumps({"type": "auth_ok", "user": info}))
                         print(f"[ws] Client auth_code: {discord_id}", flush=True)
                     else:
@@ -101,7 +140,7 @@ def handle_connection(sock, headers, client_addr):
                     item_name = data.get("item_name", "")
                     itemid = data.get("itemid", "")
                     if itemid:
-                        row = db.get_db().execute("SELECT name FROM items WHERE id=?", (int(itemid),)).fetchone()
+                        row = db.get_db().execute(f"SELECT name FROM items WHERE id={Q}", (int(itemid),)).fetchone()
                         if row:
                             item_name = row["name"]
                     if not item_name:
@@ -111,7 +150,7 @@ def handle_connection(sock, headers, client_addr):
                     station = data.get("station", "")
                     stationid = data.get("stationid", "")
                     if stationid:
-                        row = db.get_db().execute("SELECT name FROM stations WHERE id=?", (int(stationid),)).fetchone()
+                        row = db.get_db().execute(f"SELECT name FROM stations WHERE id={Q}", (int(stationid),)).fetchone()
                         if row:
                             station = row["name"]
                     if action == "add":
@@ -119,7 +158,7 @@ def handle_connection(sock, headers, client_addr):
                         db.log_sync(discord_id, "push", "ok", f"WS synced {item_name}")
                     elif action == "delete":
                         row = db.get_db().execute(
-                            "SELECT id FROM community_inventory WHERE discord_id=? AND item_name=? AND quality=? AND station=?",
+                            f"SELECT id FROM community_inventory WHERE discord_id={Q} AND item_name={Q} AND quality={Q} AND station={Q}",
                             (discord_id, item_name, quality, station)
                         ).fetchone()
                         if row:
@@ -166,13 +205,24 @@ async def _handler(websocket):
             msg_type = data.get("type", "")
 
             if msg_type == "auth":
+                jock_version = data.get("jock_version", "")
+                jock_db_schema = data.get("jock_db_schema", 0)
+                ok, err = _check_version(jock_version)
+                if not ok:
+                    await websocket.send(json.dumps({"type": "auth_error", "error": err, "update_url": UPDATE_URL}))
+                    return
+                ok, err = _check_db_schema(jock_db_schema)
+                if not ok:
+                    await websocket.send(json.dumps({"type": "auth_error", "error": err}))
+                    return
                 token = data.get("token", "")
                 user = db.get_user_by_client_token(token)
                 if user:
                     discord_id = user["discord_id"]
                     with _connections_lock:
                         _connections[discord_id] = websocket
-                    await websocket.send(json.dumps({"type": "auth_ok"}))
+                    info = {"server_schema_version": db.get_schema_version()}
+                    await websocket.send(json.dumps({"type": "auth_ok", "user": info}))
                     print(f"[ws] Client authenticated: {discord_id}", flush=True)
                 else:
                     await websocket.send(json.dumps({"type": "auth_error", "error": "Invalid token"}))
@@ -180,16 +230,27 @@ async def _handler(websocket):
 
             elif msg_type == "auth_code":
                 code = data.get("code", "")
+                jock_version = data.get("jock_version", "")
+                jock_db_schema = data.get("jock_db_schema", 0)
+                ok, err = _check_version(jock_version)
+                if not ok:
+                    await websocket.send(json.dumps({"type": "auth_error", "error": err, "update_url": UPDATE_URL}))
+                    return
+                ok, err = _check_db_schema(jock_db_schema)
+                if not ok:
+                    await websocket.send(json.dumps({"type": "auth_error", "error": err}))
+                    return
                 with _auth_codes_lock:
                     discord_id = _auth_codes.pop(code, None)
                 if discord_id:
                     with _connections_lock:
                         _connections[discord_id] = websocket
                     user = db.get_db().execute(
-                        "SELECT discord_id, discord_tag, username, display_name FROM users WHERE discord_id=?",
+                        f"SELECT discord_id, discord_tag, username, display_name FROM users WHERE discord_id={Q}",
                         (discord_id,)
                     ).fetchone()
                     info = dict(user) if user else {}
+                    info["server_schema_version"] = db.get_schema_version()
                     await websocket.send(json.dumps({"type": "auth_ok", "user": info}))
                     print(f"[ws] Client auth_code: {discord_id}", flush=True)
                 else:
@@ -201,7 +262,7 @@ async def _handler(websocket):
                 itemid = data.get("itemid", "")
                 item_name = data.get("item_name", "")
                 if not item_name and itemid:
-                    row = db.get_db().execute("SELECT name FROM items WHERE id=?", (int(itemid),)).fetchone()
+                    row = db.get_db().execute(f"SELECT name FROM items WHERE id={Q}", (int(itemid),)).fetchone()
                     item_name = row["name"] if row else ""
                 if not item_name:
                     continue
@@ -210,7 +271,7 @@ async def _handler(websocket):
                 station = data.get("station", "")
                 stationid = data.get("stationid", "")
                 if not station and stationid:
-                    row = db.get_db().execute("SELECT name FROM stations WHERE id=?", (int(stationid),)).fetchone()
+                    row = db.get_db().execute(f"SELECT name FROM stations WHERE id={Q}", (int(stationid),)).fetchone()
                     station = row["name"] if row else ""
                 if action == "add":
                     db.sync_inventory(discord_id, item_name, quality, quantity_scu, station)

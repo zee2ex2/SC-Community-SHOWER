@@ -46,6 +46,7 @@ def base_html(title, content, user=None, notif_count=0):
             <div class="dropdown-menu">
                 {admin_link}
                 <a class="button ghost" href="/notifications">Notifications{badge}</a>
+                <a class="button ghost" href="/api-keys">API Keys</a>
                 <a class="button ghost" href="/auth/logout" style="color:var(--danger)">Logout</a>
             </div>
         </div>
@@ -67,7 +68,7 @@ def base_html(title, content, user=None, notif_count=0):
 <main>{content}</main>
 <footer class="footer">
   <span>Community Shopfront &middot; Workorder &middot; Exchange Registry — {esc(GUILD_NAME)}</span>
-  <span>v0.1.1</span>
+  <span>v{db.SHOWER_VERSION}</span>
 </footer>
 </body></html>"""
 
@@ -516,10 +517,10 @@ def admin_page(user, db_obj, qs, discord_roles=None, bot_token_set=False):
                 <input type="hidden" name="discord_id" value="{u['discord_id']}">
                 <select name="role_id" onchange="this.form.submit()" style="font-size:12px;padding:2px 4px">{roles_opts}</select>
             </form>"""
-            token_clear = f"""<form method="post" action="/admin" style="display:inline" onsubmit="return confirm('Clear tokens for {esc(u['display_name'] or u['username'])}?')">
-                <input type="hidden" name="action" value="clear_user_token">
+            token_clear = f"""<form method="post" action="/admin" style="display:inline" onsubmit="return confirm('Revoke all API keys for {esc(u['display_name'] or u['username'])}?')">
+                <input type="hidden" name="action" value="clear_user_api_keys">
                 <input type="hidden" name="discord_id" value="{u['discord_id']}">
-                <button type="submit" class="button ghost" style="color:var(--danger);font-size:12px">Clear Token</button>
+                <button type="submit" class="button ghost" style="color:var(--danger);font-size:12px">Clear Keys</button>
             </form>"""
             ban_action = "unban" if u["banned"] else "ban"
             ban_btn = f"""<form method="post" action="/admin" style="display:inline" onsubmit="return confirm('{ban_action.title()} {esc(u['display_name'] or u['username'])}?')">
@@ -578,10 +579,18 @@ def admin_page(user, db_obj, qs, discord_roles=None, bot_token_set=False):
     add_item_form = ""
     add_station_form = ""
     if is_admin:
+        cats = db_obj.get_itemcategories()
+        cat_opts = "".join(f'<option value="{c["id"]}">{esc(c["name"])}</option>' for c in cats)
+        cat_select = f'<select name="catid" class="sm-input" style="width:120px">{cat_opts}</select>'
         add_item_form = f"""<form method="post" action="/admin" class="inline-form" style="margin-bottom:12px">
             <input type="hidden" name="action" value="add_item">
-            <input type="number" name="item_id" placeholder="ID" required class="sm-input" style="width:60px" min="1">
+            <input type="number" name="item_id" placeholder="ID" class="sm-input" style="width:60px" min="1">
             <input type="text" name="name" placeholder="Item name" required class="sm-input" style="width:180px">
+            {cat_select}
+            <input type="text" name="code" placeholder="Code" class="sm-input" style="width:70px">
+            <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px">
+                <input type="checkbox" name="hasquality" value="1" checked> Quality
+            </label>
             <button type="submit" class="button green">Add Item</button>
         </form>"""
         add_station_form = f"""<form method="post" action="/admin" class="inline-form">
@@ -627,7 +636,26 @@ def admin_page(user, db_obj, qs, discord_roles=None, bot_token_set=False):
             <div style="margin-top:16px">
                 <button type="submit" class="button green">Save Settings</button>
             </div>
-        </form>"""
+        </form>
+        <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
+        <h3 style="margin-bottom:8px">Database</h3>
+        <p class="muted" style="font-size:12px;word-break:break-all;margin-bottom:8px">Current: {esc(db_obj.DB_PATH)}</p>
+        <form method="post" action="/admin" class="inline-form" style="flex-direction:column;align-items:stretch">
+            <input type="hidden" name="action" value="change_db">
+            <div class="filter-group">
+                <label>Connection String</label>
+                <input type="text" name="dsn" placeholder="file path for SQLite, or mysql://user:pass@host/db" style="width:100%">
+            </div>
+            <div style="margin-top:8px">
+                <button type="submit" class="button blue">Change Database</button>
+            </div>
+        </form>
+        <div style="margin-top:12px">
+            <form method="post" action="/admin" style="display:inline" onsubmit="return confirm('Reset database? All data will be lost and tables recreated from seed.')">
+                <input type="hidden" name="action" value="reset_db">
+                <button type="submit" class="button red" style="background:var(--red)">Reset Database</button>
+            </form>
+        </div>"""
 
     server_settings = config_form or '<p class="muted">Admin access required.</p>'
 

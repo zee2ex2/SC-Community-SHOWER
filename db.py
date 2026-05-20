@@ -1,193 +1,276 @@
 import os
 import secrets
-import sqlite3
 import threading
+import sqlite3
+import queue
 from pathlib import Path
 
-DB_PATH = Path(os.environ.get("SHOWER_DB", str(Path(__file__).resolve().parent / "shower_data" / "shower.db")))
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-
+_DSN = os.environ.get("SHOWER_DB", str(Path(__file__).resolve().parent / "shower_data" / "shower.db"))
+_IS_MYSQL = _DSN.startswith("mysql://")
 _local = threading.local()
 _write_lock = threading.RLock()
 
+# MySQL connection pool (lazy-initialized)
+_pool = None
+_pool_lock = None
+
+if _IS_MYSQL:
+    import pymysql
+    _pool = queue.Queue(maxsize=20)
+    _pool_lock = threading.Lock()
+
+def _new_conn():
+    import urllib.parse
+    p = urllib.parse.urlparse(_DSN)
+    return pymysql.connect(
+        host=p.hostname or "localhost", port=p.port or 3306,
+        user=p.username or "root", password=p.password or "",
+        database=p.path.lstrip("/") or "shower",
+        charset="utf8mb4", cursorclass=pymysql.cursors.DictCursor, autocommit=False,
+    )
 
 def get_db():
-    if not hasattr(_local, "conn") or _local.conn is None:
-        _local.conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-        _local.conn.row_factory = sqlite3.Row
-        _local.conn.execute("PRAGMA journal_mode=WAL")
-        _local.conn.execute("PRAGMA foreign_keys=ON")
-    return _local.conn
+    if _IS_MYSQL:
+        try:
+            return _pool.get_nowait()
+        except queue.Empty:
+            return _new_conn()
+    else:
+        if not hasattr(_local, "conn") or _local.conn is None:
+            if not _DSN.startswith("/"):
+                Path(_DSN).parent.mkdir(parents=True, exist_ok=True)
+            _local.conn = sqlite3.connect(_DSN, check_same_thread=False)
+            _local.conn.row_factory = sqlite3.Row
+            _local.conn.execute("PRAGMA journal_mode=WAL")
+            _local.conn.execute("PRAGMA foreign_keys=ON")
+        return _local.conn
+
+def _put_db(conn):
+    if _IS_MYSQL:
+        _pool.put(conn)
+
+if _IS_MYSQL:
+    Q = "%s"
+    NOW = "NOW()"
+    NOW_N = lambda s: f"(NOW() + INTERVAL {s} SECOND)"
+    NOW_M = lambda d: f"(NOW() - INTERVAL {d} DAY)"
+    IGNORE = "INSERT IGNORE"
+    LASTID = "LAST_INSERT_ID()"
+    COLINFO = lambda t: f"SHOW COLUMNS FROM `{t}`"
+    UPSERT = lambda t, p: "ON DUPLICATE KEY UPDATE"
+else:
+    Q = "?"
+    NOW = "datetime('now')"
+    NOW_N = lambda s: f"datetime('now', '+{s} seconds')"
+    NOW_M = lambda d: f"datetime('now', '-{d} days')"
+    IGNORE = "INSERT OR IGNORE"
+    LASTID = "last_insert_rowid()"
+    COLINFO = lambda t: f"PRAGMA table_info({t})"
+    UPSERT = lambda t, p: f"ON CONFLICT({p}) DO UPDATE SET"
+
+DB_PATH = _DSN
+SHOWER_VERSION = "0.2.0"
+SCHEMA_VERSION = 3
 
 
 def write_db(func):
     def wrapper(*args, **kwargs):
-        with _write_lock:
+        db = get_db()
+        try:
             result = func(*args, **kwargs)
-            get_db().commit()
+            db.commit()
             return result
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            _put_db(db)
     return wrapper
 
 
+def _cols(table):
+    db = get_db()
+    data = db.execute(COLINFO(table)).fetchall()
+    _put_db(db)
+    if _IS_MYSQL:
+        return [r["Field"] for r in data]
+    return [r[1] for r in data]
+
+
+# ─── Schema ──────────────────────────────────────────────────────────
+
 def init_db():
     db = get_db()
-    db.executescript("""
+    AI = "AUTO_INCREMENT" if _IS_MYSQL else "AUTOINCREMENT"
+    CT = "CURRENT_TIMESTAMP"
+    schema = f"""
     CREATE TABLE IF NOT EXISTS users (
-        discord_id TEXT PRIMARY KEY,
-        discord_tag TEXT,
-        username TEXT,
-        display_name TEXT,
+        discord_id VARCHAR(64) PRIMARY KEY,
+        discord_tag VARCHAR(128),
+        username VARCHAR(128),
+        display_name VARCHAR(128),
         avatar TEXT,
         access_token TEXT,
         refresh_token TEXT,
         token_expires_at INTEGER DEFAULT 0,
         role_ids TEXT DEFAULT '',
         is_admin INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now'))
+        created_at TIMESTAMP DEFAULT {CT}
     );
-
     CREATE TABLE IF NOT EXISTS sessions (
-        session_id TEXT PRIMARY KEY,
-        discord_id TEXT NOT NULL,
-        expires_at TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+        session_id VARCHAR(64) PRIMARY KEY,
+        discord_id VARCHAR(64) NOT NULL,
+        expires_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT {CT}
     );
-
     CREATE TABLE IF NOT EXISTS items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE NOT NULL,
+        id INTEGER PRIMARY KEY {AI},
+        name VARCHAR(255) UNIQUE NOT NULL,
         category TEXT DEFAULT ''
     );
-
     CREATE TABLE IF NOT EXISTS systems (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE NOT NULL
+        id INTEGER PRIMARY KEY {AI},
+        name VARCHAR(255) UNIQUE NOT NULL
     );
-
     CREATE TABLE IF NOT EXISTS stations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE NOT NULL,
-        system_id INTEGER,
-        FOREIGN KEY (system_id) REFERENCES systems(id)
+        id INTEGER PRIMARY KEY {AI},
+        name VARCHAR(255) UNIQUE NOT NULL,
+        system_id INTEGER
     );
-
     CREATE TABLE IF NOT EXISTS community_inventory (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        discord_id TEXT NOT NULL,
-        item_name TEXT NOT NULL,
+        id INTEGER PRIMARY KEY {AI},
+        discord_id VARCHAR(64) NOT NULL,
+        item_name VARCHAR(255) NOT NULL,
         quality INTEGER DEFAULT 100,
         quantity_scu REAL DEFAULT 1.0,
         station TEXT DEFAULT '',
-        synced_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+        synced_at TIMESTAMP DEFAULT {CT}
     );
-
     CREATE TABLE IF NOT EXISTS order_requests (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        discord_id TEXT NOT NULL,
-        item_name TEXT NOT NULL,
+        id INTEGER PRIMARY KEY {AI},
+        discord_id VARCHAR(64) NOT NULL,
+        item_name VARCHAR(255) NOT NULL,
         min_quality INTEGER DEFAULT 1,
         quantity INTEGER DEFAULT 1,
         notes TEXT DEFAULT '',
         status TEXT DEFAULT 'open',
-        assigned_discord_id TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        fulfilled_at TEXT,
-        FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+        assigned_discord_id VARCHAR(64),
+        created_at TIMESTAMP DEFAULT {CT},
+        fulfilled_at TIMESTAMP
     );
-
     CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        discord_id TEXT NOT NULL,
+        id INTEGER PRIMARY KEY {AI},
+        discord_id VARCHAR(64) NOT NULL,
         title TEXT NOT NULL,
         body TEXT DEFAULT '',
         source TEXT DEFAULT 'system',
         read INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+        created_at TIMESTAMP DEFAULT {CT}
     );
-
     CREATE TABLE IF NOT EXISTS sync_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        discord_id TEXT,
+        id INTEGER PRIMARY KEY {AI},
+        discord_id VARCHAR(64),
         direction TEXT,
         status TEXT,
         message TEXT,
-        synced_at TEXT DEFAULT (datetime('now'))
+        synced_at TIMESTAMP DEFAULT {CT}
     );
-
     CREATE TABLE IF NOT EXISTS config (
-        key TEXT PRIMARY KEY,
+        key VARCHAR(255) PRIMARY KEY,
         value TEXT
     );
-
     CREATE TABLE IF NOT EXISTS api_keys (
-        key TEXT PRIMARY KEY,
-        discord_id TEXT NOT NULL,
+        key VARCHAR(64) PRIMARY KEY,
+        discord_id VARCHAR(64) NOT NULL,
         label TEXT DEFAULT '',
-        last_used TEXT,
-        expires_at TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+        last_used TIMESTAMP,
+        expires_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT {CT}
     );
-
-    CREATE TABLE IF NOT EXISTS pits_connections (
-        discord_id TEXT PRIMARY KEY,
-        pits_url TEXT NOT NULL,
-        client_token TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now')),
-        FOREIGN KEY (discord_id) REFERENCES users(discord_id)
-    );
-
     CREATE TABLE IF NOT EXISTS client_tokens (
-        token TEXT PRIMARY KEY,
-        discord_id TEXT NOT NULL,
-        created_at TEXT DEFAULT (datetime('now')),
-        expires_at TEXT NOT NULL,
-        FOREIGN KEY (discord_id) REFERENCES users(discord_id)
+        token VARCHAR(64) PRIMARY KEY,
+        discord_id VARCHAR(64) NOT NULL,
+        created_at TIMESTAMP DEFAULT {CT},
+        expires_at TIMESTAMP NOT NULL
     );
-
     CREATE TABLE IF NOT EXISTS roles (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE NOT NULL,
+        id INTEGER PRIMARY KEY {AI},
+        name VARCHAR(255) UNIQUE NOT NULL,
         level INTEGER NOT NULL DEFAULT 1,
-        discord_role_id TEXT,
+        discord_role_id VARCHAR(64),
         is_env INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now'))
+        created_at TIMESTAMP DEFAULT {CT}
     );
-
-    CREATE TABLE IF NOT EXISTS config (
-        key TEXT PRIMARY KEY,
-        value TEXT
+    CREATE TABLE IF NOT EXISTS itemcategory (
+        id INTEGER PRIMARY KEY {AI},
+        name VARCHAR(255) NOT NULL,
+        parent_id INTEGER DEFAULT 0
     );
-    """)
+    """
+    for stmt in schema.split(";"):
+        s = stmt.strip()
+        if s:
+            try:
+                db.execute(s)
+            except Exception:
+                pass
     db.commit()
+    _put_db(db)
     _migrate()
     _seed_defaults()
+    existing_ver = int(get_config("schema_version", "0"))
+    if existing_ver < SCHEMA_VERSION:
+        set_config("schema_version", str(SCHEMA_VERSION))
 
 
 def _migrate():
-    db = get_db()
-    cols_n = [row[1] for row in db.execute("PRAGMA table_info(notifications)").fetchall()]
+    cols_i = _cols("items")
+    if "hasquality" not in cols_i:
+        db = get_db()
+        db.execute(f"ALTER TABLE items ADD COLUMN hasquality INTEGER DEFAULT 0")
+        db.commit()
+        _put_db(db)
+    if "code" not in cols_i:
+        db = get_db()
+        db.execute(f"ALTER TABLE items ADD COLUMN code TEXT DEFAULT ''")
+        db.commit()
+        _put_db(db)
+    if "catid" not in cols_i:
+        db = get_db()
+        db.execute(f"ALTER TABLE items ADD COLUMN catid INTEGER DEFAULT 1")
+        db.commit()
+        _put_db(db)
+
+    cols_u = _cols("users")
+    for col, dtype in [("display_name", "TEXT"), ("role_id", "INTEGER"), ("banned", "INTEGER DEFAULT 0"), ("last_seen", "TIMESTAMP")]:
+        if col not in cols_u:
+            db = get_db()
+            db.execute(f"ALTER TABLE users ADD COLUMN {col} {dtype}")
+            db.commit()
+            _put_db(db)
+
+    cols_n = _cols("notifications")
     if "dm_sent" not in cols_n:
-        db.execute("ALTER TABLE notifications ADD COLUMN dm_sent INTEGER DEFAULT 0")
+        db = get_db()
+        db.execute(f"ALTER TABLE notifications ADD COLUMN dm_sent INTEGER DEFAULT 0")
         db.commit()
-    cols_u = [row[1] for row in db.execute("PRAGMA table_info(users)").fetchall()]
-    if "display_name" not in cols_u:
-        db.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
-        db.commit()
-    if "role_id" not in cols_u:
-        db.execute("ALTER TABLE users ADD COLUMN role_id INTEGER REFERENCES roles(id)")
-        db.commit()
-    if "banned" not in cols_u:
-        db.execute("ALTER TABLE users ADD COLUMN banned INTEGER DEFAULT 0")
-        db.commit()
-    if "last_seen" not in cols_u:
-        db.execute("ALTER TABLE users ADD COLUMN last_seen TEXT")
-        db.commit()
-    if db.execute("SELECT COUNT(*) FROM items").fetchone()[0] == 0:
-        for row in [
+        _put_db(db)
+
+    # Seed itemcategory
+    db = get_db()
+    row = db.execute(f"SELECT COUNT(*) AS cnt FROM itemcategory").fetchone()
+    if row and row["cnt"] == 0:
+        for ic in [(1, "Commodity", 0), (2, "Ores", 1), (3, "Vehicle Mining", 1),
+                   (4, "FPS Mining", 1), (5, "Harvestable", 1), (6, "Salvage", 1)]:
+            db.execute(f"{IGNORE} INTO itemcategory (id, name, parent_id) VALUES ({Q},{Q},{Q})", ic)
+    db.commit()
+    _put_db(db)
+
+    # Seed items if empty
+    db = get_db()
+    row = db.execute(f"SELECT COUNT(*) AS cnt FROM items").fetchone()
+    if row and row["cnt"] == 0:
+        seed_items = [
             (1, "Agricium"), (3, "Agricultural Supplies"), (4, "Altruciatoxin"),
             (5, "Aluminum"), (7, "Amioshi Plague"), (8, "Aphorite"), (9, "Astatine"),
             (10, "Audio Visual Equipment"), (11, "Beryl"), (13, "Bexalite"),
@@ -248,15 +331,38 @@ def _migrate():
             (205, "Ship Ammunition - Size 5"), (206, "Ship Ammunition - Size 6"),
             (207, "Ship Ammunition - Size 7"), (208, "Ship Decoy Countermeasures"),
             (209, "Ship Noise Countermeasures"),
-        ]:
-            db.execute("INSERT OR IGNORE INTO items (id, name) VALUES (?, ?)", row)
-        db.execute("INSERT OR IGNORE INTO items (name) VALUES ('Zeta-Prolanite')")
-        db.commit()
+        ]
+        for row in seed_items:
+            db.execute(f"{IGNORE} INTO items (id, name) VALUES ({Q},{Q})", row)
+        db.execute(f"{IGNORE} INTO items (name) VALUES ('Zeta-Prolanite')")
+    db.commit()
 
-    if db.execute("SELECT COUNT(*) FROM stations").fetchone()[0] == 0:
-        for r in db.execute("SELECT DISTINCT station FROM community_inventory WHERE station IS NOT NULL AND station != ''"):
-            db.execute("INSERT OR IGNORE INTO stations (name) VALUES (?)", (r["station"],))
-        for row in [
+    # Set catid and hasquality
+    db.execute(f"UPDATE items SET hasquality=1 WHERE catid IN (2,3,4)")
+    cat_map = {
+        2: [1, 5, 7, 11, 13, 15, 20, 22, 33, 39, 101, 44, 47, 184, 194, 58, 60, 124, 188, 100, 122, 73, 103, 75, 190, 77],
+        3: [167, 170, 169, 168],
+        4: [8, 179, 178, 28, 36, 171, 46, 200, 172],
+        5: [105, 24, 35, 37, 55, 57, 65, 66, 72, 198, 18],
+        6: [63, 181, 182, 183],
+    }
+    for catid, ids in cat_map.items():
+        for iid in ids:
+            db.execute(f"UPDATE items SET catid={Q} WHERE id={Q}", (catid, iid))
+    for row in [(172, "Saldynium", 4, "SALD"), (178, "Carinite Pure", 4, "CARIP")]:
+        db.execute(f"{IGNORE} INTO items (id, name, catid, code, hasquality) VALUES ({Q},{Q},{Q},{Q},1)", row)
+    for name, code in [("Amiant", "AMIA"), ("Flareweed", "FLWD"), ("Fotia", "FTIA"), ("Pingala", "PNGL")]:
+        existing = db.execute(f"SELECT id FROM items WHERE name={Q}", (name,)).fetchone()
+        if not existing:
+            db.execute(f"INSERT INTO items (name, catid, code, hasquality) VALUES ({Q}, 4, {Q}, 1)", (name, code))
+    db.commit()
+    _put_db(db)
+
+    # Stations
+    db = get_db()
+    row = db.execute(f"SELECT COUNT(*) AS cnt FROM stations").fetchone()
+    if row and row["cnt"] == 0:
+        stations = [
             (1, "ARC-L1 Wide Forest Station"), (2, "ARC-L2 Lively Pathway Station"),
             (3, "ARC-L3 Modern Express Station"), (4, "ARC-L4 Faint Glen Station"),
             (5, "ARC-L5 Yellow Core Station"), (6, "Baijini Point"),
@@ -279,11 +385,16 @@ def _migrate():
             (59, "People's Service Station Alpha"), (60, "People's Service Station Theta"),
             (61, "People's Service Station Lambda"), (62, "Levksi"),
             (63, "TestStationRenamed"),
-        ]:
-            db.execute("INSERT OR IGNORE INTO stations (id, name) VALUES (?, ?)", row)
-        db.commit()
+        ]
+        for row in stations:
+            db.execute(f"{IGNORE} INTO stations (id, name) VALUES ({Q},{Q})", row)
+    db.commit()
+    _put_db(db)
 
-    if db.execute("SELECT COUNT(*) FROM systems").fetchone()[0] == 0:
+    # Systems
+    db = get_db()
+    row = db.execute(f"SELECT COUNT(*) AS cnt FROM systems").fetchone()
+    if row and row["cnt"] == 0:
         for name in [
             "78 Leonis", "Ail'ka", "Bacchus", "Baker", "Banshee", "Branaugh",
             "Bremen", "Caliban", "Cano", "Castra", "Cathcart", "Centauri",
@@ -303,33 +414,35 @@ def _migrate():
             "Virgil", "Virgo", "Volt", "Voodoo", "Vulture", "Yulin",
             "Yā'mon",
         ]:
-            db.execute("INSERT OR IGNORE INTO systems (name) VALUES (?)", (name,))
-        db.commit()
+            db.execute(f"{IGNORE} INTO systems (name) VALUES ({Q})", (name,))
+    db.commit()
+    _put_db(db)
 
 
-# --- User helpers ---
+# ─── User helpers ────────────────────────────────────────────────────
 
 def ensure_user(discord_id):
     db = get_db()
-    row = db.execute("SELECT discord_id FROM users WHERE discord_id=?", (discord_id,)).fetchone()
+    row = db.execute(f"SELECT discord_id FROM users WHERE discord_id={Q}", (discord_id,)).fetchone()
     if not row:
-        db.execute("INSERT INTO users (discord_id, discord_tag) VALUES (?, ?)",
+        db.execute(f"INSERT INTO users (discord_id, discord_tag) VALUES ({Q},{Q})",
                    (discord_id, f"Unknown#{discord_id[:4]}"))
+    _put_db(db)
 
 
 @write_db
 def upsert_user(discord_id, discord_tag, username, display_name, avatar, access_token, refresh_token,
                 token_expires_in, role_ids, is_admin):
     db = get_db()
-    db.execute("""INSERT INTO users (discord_id, discord_tag, username, display_name, avatar,
+    db.execute(f"""INSERT INTO users (discord_id, discord_tag, username, display_name, avatar,
                 access_token, refresh_token, token_expires_at, role_ids, is_admin)
-                VALUES (?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(discord_id) DO UPDATE SET
-                discord_tag=excluded.discord_tag, username=excluded.username,
-                display_name=excluded.display_name,
-                avatar=excluded.avatar, access_token=excluded.access_token,
-                refresh_token=excluded.refresh_token, token_expires_at=excluded.token_expires_at,
-                role_ids=excluded.role_ids, is_admin=excluded.is_admin""",
+                VALUES ({Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q},{Q})
+                {UPSERT("users", "discord_id")}
+                discord_tag=VALUES(discord_tag), username=VALUES(username),
+                display_name=VALUES(display_name),
+                avatar=VALUES(avatar), access_token=VALUES(access_token),
+                refresh_token=VALUES(refresh_token), token_expires_at=VALUES(token_expires_at),
+                role_ids=VALUES(role_ids), is_admin=VALUES(is_admin)""",
                (discord_id, discord_tag, username, display_name, avatar, access_token,
                 refresh_token, token_expires_in, role_ids, is_admin))
     _assign_user_role(discord_id, role_ids)
@@ -339,251 +452,248 @@ def _assign_user_role(discord_id, role_ids):
     db = get_db()
     ids = role_ids.split(",") if role_ids else []
     if not ids:
+        _put_db(db)
         return
-    best = None
-    best_level = -1
     for r in db.execute("SELECT * FROM roles WHERE discord_role_id IS NOT NULL").fetchall():
-        if r["discord_role_id"] in ids and r["level"] > best_level:
-            best = r["id"]
+        if r["discord_role_id"] in ids:
             best_level = r["level"]
-    if best:
-        db.execute("UPDATE users SET role_id=?, is_admin=? WHERE discord_id=?",
-                   (best, 1 if best_level >= 3 else 0, discord_id))
-        db.commit()
+            db.execute(f"UPDATE users SET role_id={Q}, is_admin={Q} WHERE discord_id={Q}",
+                       (r["id"], 1 if best_level >= 3 else 0, discord_id))
+            db.commit()
+            break
+    _put_db(db)
 
 
 def get_user_by_session(session_id):
     db = get_db()
-    return db.execute("""SELECT u.*, COALESCE(r.level, 1) AS role_level FROM users u
+    row = db.execute(f"""SELECT u.*, COALESCE(r.level, 1) AS role_level FROM users u
         JOIN sessions s ON u.discord_id = s.discord_id
         LEFT JOIN roles r ON u.role_id = r.id
-        WHERE s.session_id=? AND (s.expires_at IS NULL OR s.expires_at > datetime('now'))""",
+        WHERE s.session_id={Q} AND (s.expires_at IS NULL OR s.expires_at > {NOW})""",
         (session_id,)).fetchone()
+    _put_db(db)
+    return row
 
 
-# --- Sessions ---
+# ─── Sessions ────────────────────────────────────────────────────────
 
 @write_db
 def create_session(session_id, discord_id, ttl):
     db = get_db()
-    db.execute("INSERT INTO sessions (session_id, discord_id, expires_at) VALUES (?, ?, datetime('now', '+{} seconds'))".format(ttl),
+    db.execute(f"INSERT INTO sessions (session_id, discord_id, expires_at) VALUES ({Q}, {Q}, {NOW_N(ttl)})",
                (session_id, discord_id))
 
 
 @write_db
 def delete_session(session_id):
-    get_db().execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
+    get_db().execute(f"DELETE FROM sessions WHERE session_id={Q}", (session_id,))
 
 
 @write_db
 def delete_user_sessions(discord_id):
-    get_db().execute("DELETE FROM sessions WHERE discord_id=?", (discord_id,))
+    get_db().execute(f"DELETE FROM sessions WHERE discord_id={Q}", (discord_id,))
 
 
-# --- API Keys ---
+# ─── API Keys ────────────────────────────────────────────────────────
 
 @write_db
 def create_api_key(discord_id, label=""):
     key = secrets.token_hex(32)
     db = get_db()
-    db.execute("INSERT INTO api_keys (key, discord_id, label) VALUES (?, ?, ?)",
+    db.execute(f"INSERT INTO api_keys (key, discord_id, label) VALUES ({Q},{Q},{Q})",
                (key, discord_id, label))
     return key
 
 
 @write_db
 def revoke_api_key(key, discord_id):
-    get_db().execute("DELETE FROM api_keys WHERE key=? AND discord_id=?", (key, discord_id))
+    get_db().execute(f"DELETE FROM api_keys WHERE key={Q} AND discord_id={Q}", (key, discord_id))
 
 
 def get_user_by_api_key(key):
     db = get_db()
-    row = db.execute("""SELECT u.* FROM users u
+    row = db.execute(f"""SELECT u.* FROM users u
         JOIN api_keys k ON u.discord_id = k.discord_id
-        WHERE k.key=? AND (k.expires_at IS NULL OR k.expires_at > datetime('now'))""",
+        WHERE k.key={Q} AND (k.expires_at IS NULL OR k.expires_at > {NOW})""",
         (key,)).fetchone()
     if row:
-        db.execute("UPDATE api_keys SET last_used=datetime('now') WHERE key=?", (key,))
+        db.execute(f"UPDATE api_keys SET last_used={NOW} WHERE key={Q}", (key,))
         db.commit()
+    _put_db(db)
     return row
 
 
 def get_api_keys(discord_id):
-    return get_db().execute(
-        "SELECT key, label, last_used, expires_at, created_at FROM api_keys WHERE discord_id=? ORDER BY created_at DESC",
-        (discord_id,)).fetchall()
+    db = get_db()
+    rows = db.execute(f"SELECT * FROM api_keys WHERE discord_id={Q} ORDER BY created_at DESC", (discord_id,)).fetchall()
+    _put_db(db)
+    return rows
 
 
-# --- Client Tokens ---
+# ─── Client Tokens ───────────────────────────────────────────────────
 
 @write_db
 def create_client_token(discord_id, expires_in_days=30):
     from datetime import datetime, timedelta
-    import secrets
     token = secrets.token_hex(32)
     expires_at = (datetime.utcnow() + timedelta(days=expires_in_days)).strftime("%Y-%m-%dT%H:%M:%S")
     db = get_db()
-    db.execute("INSERT INTO client_tokens (token, discord_id, expires_at) VALUES (?, ?, ?)",
+    db.execute(f"INSERT INTO client_tokens (token, discord_id, expires_at) VALUES ({Q},{Q},{Q})",
                (token, discord_id, expires_at))
     return token, expires_at
 
 
 def get_user_by_client_token(token):
     db = get_db()
-    return db.execute("""SELECT u.* FROM users u
+    row = db.execute(f"""SELECT u.* FROM users u
         JOIN client_tokens t ON u.discord_id = t.discord_id
-        WHERE t.token=? AND t.expires_at > datetime('now')""",
+        WHERE t.token={Q} AND t.expires_at > {NOW}""",
         (token,)).fetchone()
-
-
-def get_client_tokens(discord_id):
-    return get_db().execute(
-        "SELECT token, created_at, expires_at FROM client_tokens WHERE discord_id=? ORDER BY created_at DESC",
-        (discord_id,)).fetchall()
+    _put_db(db)
+    return row
 
 
 @write_db
 def revoke_client_token(token):
-    get_db().execute("DELETE FROM client_tokens WHERE token=?", (token,))
+    get_db().execute(f"DELETE FROM client_tokens WHERE token={Q}", (token,))
 
 
-# --- My Inventory (user-managed CRUD) ---
+# ─── My Inventory ────────────────────────────────────────────────────
 
 @write_db
 def add_my_inventory(discord_id, item_name, quality, quantity_scu, station):
     if not _item_exists(item_name):
-        return None, f"Item '{item_name}' does not exist. Only items in the local database can be added."
+        return None, f"Item '{item_name}' does not exist."
     if station and not _station_exists(station):
-        return None, f"Station '{station}' does not exist. Only stations in the local database can be added."
+        return None, f"Station '{station}' does not exist."
     db = get_db()
     existing = db.execute(
-        "SELECT id FROM community_inventory WHERE discord_id=? AND item_name=? AND quality=? AND station=?",
+        f"SELECT id FROM community_inventory WHERE discord_id={Q} AND item_name={Q} AND quality={Q} AND station={Q}",
         (discord_id, item_name, quality, station)).fetchone()
     if existing:
-        db.execute("UPDATE community_inventory SET quantity_scu=quantity_scu+?, synced_at=datetime('now') WHERE id=?",
+        db.execute(f"UPDATE community_inventory SET quantity_scu=quantity_scu+{Q}, synced_at={NOW} WHERE id={Q}",
                    (quantity_scu, existing["id"]))
         return existing["id"], None
-    db.execute("INSERT INTO community_inventory (discord_id, item_name, quality, quantity_scu, station) VALUES (?,?,?,?,?)",
+    db.execute(f"INSERT INTO community_inventory (discord_id, item_name, quality, quantity_scu, station) VALUES ({Q},{Q},{Q},{Q},{Q})",
                (discord_id, item_name, quality, quantity_scu, station))
-    return db.execute("SELECT last_insert_rowid()").fetchone()[0], None
-
-
-@write_db
-def update_my_inventory(inv_id, discord_id, item_name, quality, quantity_scu, station):
-    if not _item_exists(item_name):
-        return f"Item '{item_name}' does not exist. Only items in the local database can be added."
-    if station and not _station_exists(station):
-        return f"Station '{station}' does not exist. Only stations in the local database can be added."
-    db = get_db()
-    db.execute("UPDATE community_inventory SET item_name=?, quality=?, quantity_scu=?, station=?, synced_at=datetime('now') WHERE id=? AND discord_id=?",
-               (item_name, quality, quantity_scu, station, inv_id, discord_id))
-    return None
+    row = db.execute(f"SELECT {LASTID} AS id").fetchone()
+    return row["id"], None
 
 
 def _ensure_item(name):
     if not name:
         return
     db = get_db()
-    existing = db.execute("SELECT id FROM items WHERE name=?", (name,)).fetchone()
+    existing = db.execute(f"SELECT id FROM items WHERE name={Q}", (name,)).fetchone()
     if not existing:
-        db.execute("INSERT INTO items (name) VALUES (?)", (name,))
+        db.execute(f"{IGNORE} INTO items (name) VALUES ({Q})", (name,))
         db.commit()
+    _put_db(db)
 
 
 def _ensure_station(name):
     if not name:
         return
     db = get_db()
-    existing = db.execute("SELECT id FROM stations WHERE name=?", (name,)).fetchone()
+    existing = db.execute(f"SELECT id FROM stations WHERE name={Q}", (name,)).fetchone()
     if not existing:
-        db.execute("INSERT INTO stations (name) VALUES (?)", (name,))
+        db.execute(f"{IGNORE} INTO stations (name) VALUES ({Q})", (name,))
         db.commit()
+    _put_db(db)
 
 
 def _station_exists(name):
     if not name:
         return True
     db = get_db()
-    return db.execute("SELECT 1 FROM stations WHERE name=?", (name,)).fetchone() is not None
+    r = db.execute(f"SELECT 1 AS ok FROM stations WHERE name={Q}", (name,)).fetchone()
+    _put_db(db)
+    return r is not None
+
+
+def _item_exists(name):
+    db = get_db()
+    r = db.execute(f"SELECT 1 AS ok FROM items WHERE name={Q}", (name,)).fetchone()
+    _put_db(db)
+    return r is not None
 
 
 def get_item_autocomplete(prefix, limit=10):
     db = get_db()
     names = set()
-    for r in db.execute(
-            "SELECT DISTINCT name FROM items WHERE name LIKE ? ORDER BY name LIMIT ?",
-            (f"%{prefix}%", limit)):
+    for r in db.execute(f"SELECT DISTINCT name FROM items WHERE name LIKE {Q} ORDER BY name LIMIT {Q}",
+                        (f"%{prefix}%", limit)):
         names.add(r["name"])
     if len(names) < limit:
-        for r in db.execute(
-                "SELECT DISTINCT item_name FROM community_inventory WHERE item_name LIKE ? ORDER BY item_name LIMIT ?",
-                (f"%{prefix}%", limit)):
+        for r in db.execute(f"SELECT DISTINCT item_name FROM community_inventory WHERE item_name LIKE {Q} ORDER BY item_name LIMIT {Q}",
+                            (f"%{prefix}%", limit)):
             names.add(r["item_name"])
+    _put_db(db)
     return sorted(names)[:limit]
 
 
 def get_station_autocomplete(prefix, limit=10):
     db = get_db()
     names = set()
-    for r in db.execute("SELECT DISTINCT name FROM stations WHERE name LIKE ? ORDER BY name LIMIT ?",
+    for r in db.execute(f"SELECT DISTINCT name FROM stations WHERE name LIKE {Q} ORDER BY name LIMIT {Q}",
                         (f"%{prefix}%", limit)):
         names.add(r["name"])
     if len(names) < limit:
-        for r in db.execute("SELECT DISTINCT station FROM community_inventory WHERE station LIKE ? ORDER BY station LIMIT ?",
+        for r in db.execute(f"SELECT DISTINCT station FROM community_inventory WHERE station LIKE {Q} ORDER BY station LIMIT {Q}",
                             (f"%{prefix}%", limit)):
             if r["station"]:
                 names.add(r["station"])
+    _put_db(db)
     return sorted(names)[:limit]
 
 
-# --- Inventory ---
-
-def _item_exists(name):
-    db = get_db()
-    return db.execute("SELECT 1 FROM items WHERE name=?", (name,)).fetchone() is not None
-
+# ─── Inventory Sync ──────────────────────────────────────────────────
 
 @write_db
 def sync_inventory(discord_id, item_name, quality, quantity_scu, station):
     if not _item_exists(item_name):
-        return {"ok": False, "error": f"Item '{item_name}' does not exist on this SHOWER server. Custom items must be added locally first."}
+        return {"ok": False, "error": f"Item '{item_name}' does not exist."}
     if station and not _station_exists(station):
-        return {"ok": False, "error": f"Station '{station}' does not exist on this SHOWER server. Custom stations must be added locally first."}
+        return {"ok": False, "error": f"Station '{station}' does not exist."}
     ensure_user(discord_id)
     db = get_db()
     existing = db.execute(
-        "SELECT id, quantity_scu FROM community_inventory WHERE discord_id=? AND item_name=? AND quality=? AND station=?",
+        f"SELECT id, quantity_scu FROM community_inventory WHERE discord_id={Q} AND item_name={Q} AND quality={Q} AND station={Q}",
         (discord_id, item_name, quality, station)).fetchone()
     if existing:
-        db.execute("UPDATE community_inventory SET quantity_scu=quantity_scu+?, synced_at=datetime('now') WHERE id=?",
+        db.execute(f"UPDATE community_inventory SET quantity_scu=quantity_scu+{Q}, synced_at={NOW} WHERE id={Q}",
                    (quantity_scu, existing["id"]))
     else:
-        db.execute("""INSERT INTO community_inventory (discord_id, item_name, quality, quantity_scu, station)
-                   VALUES (?,?,?,?,?)""", (discord_id, item_name, quality, quantity_scu, station))
+        db.execute(f"INSERT INTO community_inventory (discord_id, item_name, quality, quantity_scu, station) VALUES ({Q},{Q},{Q},{Q},{Q})",
+                   (discord_id, item_name, quality, quantity_scu, station))
     return {"ok": True}
 
 
 def get_inventory_item(discord_id, inventory_id):
-    return get_db().execute(
-        "SELECT * FROM community_inventory WHERE id=? AND discord_id=?",
-        (inventory_id, discord_id)
-    ).fetchone()
+    db = get_db()
+    row = db.execute(f"SELECT * FROM community_inventory WHERE id={Q} AND discord_id={Q}",
+                     (inventory_id, discord_id)).fetchone()
+    _put_db(db)
+    return row
 
 
 @write_db
 def delete_inventory_item(discord_id, inventory_id):
     ensure_user(discord_id)
-    get_db().execute("DELETE FROM community_inventory WHERE id=? AND discord_id=?",
+    get_db().execute(f"DELETE FROM community_inventory WHERE id={Q} AND discord_id={Q}",
                      (inventory_id, discord_id))
 
 
 def get_user_inventory(discord_id, limit=None):
-    q = "SELECT * FROM community_inventory WHERE discord_id=? ORDER BY synced_at DESC"
+    db = get_db()
+    q = f"SELECT * FROM community_inventory WHERE discord_id={Q} ORDER BY synced_at DESC"
     params = [discord_id]
     if limit:
-        q += " LIMIT ?"
+        q += f" LIMIT {Q}"
         params.append(limit)
-    return get_db().execute(q, params).fetchall()
+    rows = db.execute(q, params).fetchall()
+    _put_db(db)
+    return rows
 
 
 def all_inventory(limit=200, search=None, qual_min=None, qual_max=None, qty_min=None):
@@ -591,37 +701,37 @@ def all_inventory(limit=200, search=None, qual_min=None, qual_max=None, qty_min=
     clauses = []
     params = []
     if search:
-        clauses.append("ci.item_name LIKE ?")
+        clauses.append(f"ci.item_name LIKE {Q}")
         params.append(f"%{search}%")
     if qual_min is not None:
-        clauses.append("ci.quality >= ?")
+        clauses.append(f"ci.quality >= {Q}")
         params.append(qual_min)
     if qual_max is not None:
-        clauses.append("ci.quality <= ?")
+        clauses.append(f"ci.quality <= {Q}")
         params.append(qual_max)
     if qty_min is not None:
-        clauses.append("ci.quantity_scu >= ?")
+        clauses.append(f"ci.quantity_scu >= {Q}")
         params.append(qty_min)
-    where = ""
-    if clauses:
-        where = "WHERE " + " AND ".join(clauses)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
     params.append(limit)
-    return db.execute(
+    rows = db.execute(
         f"""SELECT ci.*, COALESCE(u.display_name, u.discord_tag) AS display_name FROM community_inventory ci
         LEFT JOIN users u ON ci.discord_id = u.discord_id
-        {where} ORDER BY ci.synced_at DESC LIMIT ?""",
+        {where} ORDER BY ci.synced_at DESC LIMIT {Q}""",
         params).fetchall()
+    _put_db(db)
+    return rows
 
 
-# --- Orders ---
+# ─── Orders ──────────────────────────────────────────────────────────
 
 @write_db
 def create_order(discord_id, item_name, min_quality, quantity, notes=""):
     ensure_user(discord_id)
     db = get_db()
-    cur = db.execute("""INSERT INTO order_requests (discord_id, item_name, min_quality, quantity, notes)
-                     VALUES (?,?,?,?,?)""", (discord_id, item_name, min_quality, quantity, notes))
-    order_id = cur.lastrowid
+    db.execute(f"INSERT INTO order_requests (discord_id, item_name, min_quality, quantity, notes) VALUES ({Q},{Q},{Q},{Q},{Q})",
+               (discord_id, item_name, min_quality, quantity, notes))
+    order_id = db.execute(f"SELECT {LASTID} AS id").fetchone()["id"]
     _notify_all(f"New Order: {item_name}", f"{item_name} (Q{min_quality}+, x{quantity}) requested.")
     return order_id
 
@@ -630,248 +740,363 @@ def create_order(discord_id, item_name, min_quality, quantity, notes=""):
 def fulfill_order(order_id, fulfiller_discord_id):
     ensure_user(fulfiller_discord_id)
     db = get_db()
-    order = db.execute("SELECT * FROM order_requests WHERE id=?", (order_id,)).fetchone()
+    order = db.execute(f"SELECT * FROM order_requests WHERE id={Q}", (order_id,)).fetchone()
     if not order:
         return None, "Order not found"
     if order["status"] != "open":
         return None, "Order already fulfilled"
-    db.execute("""UPDATE order_requests SET status='fulfilled', assigned_discord_id=?,
-                fulfilled_at=datetime('now') WHERE id=?""", (fulfiller_discord_id, order_id))
+    db.execute(f"UPDATE order_requests SET status='fulfilled', assigned_discord_id={Q}, fulfilled_at={NOW} WHERE id={Q}",
+               (fulfiller_discord_id, order_id))
     _add_notification(order["discord_id"], "Order Fulfilled",
                       f"Your request for {order['item_name']} has been fulfilled.", "order")
     return order, None
 
 
 def get_open_orders():
-    return get_db().execute(
-        "SELECT * FROM order_requests WHERE status='open' ORDER BY created_at DESC").fetchall()
+    db = get_db()
+    rows = db.execute("SELECT * FROM order_requests WHERE status='open' ORDER BY created_at DESC").fetchall()
+    _put_db(db)
+    return rows
 
 
 def get_user_orders(discord_id, limit=None):
-    q = "SELECT * FROM order_requests WHERE discord_id=? ORDER BY created_at DESC"
+    db = get_db()
+    q = f"SELECT * FROM order_requests WHERE discord_id={Q} ORDER BY created_at DESC"
     params = [discord_id]
     if limit:
-        q += " LIMIT ?"
+        q += f" LIMIT {Q}"
         params.append(limit)
-    return get_db().execute(q, params).fetchall()
+    rows = db.execute(q, params).fetchall()
+    _put_db(db)
+    return rows
 
 
-# --- Stats ---
+# ─── Stats ───────────────────────────────────────────────────────────
 
 def get_active_users_count():
     db = get_db()
-    row = db.execute("""SELECT COUNT(DISTINCT discord_id) FROM (
-        SELECT discord_id FROM community_inventory WHERE synced_at > datetime('now', '-30 days')
+    row = db.execute(f"""SELECT COUNT(DISTINCT discord_id) AS cnt FROM (
+        SELECT discord_id FROM community_inventory WHERE synced_at > {NOW_M(30)}
         UNION
-        SELECT discord_id FROM order_requests WHERE created_at > datetime('now', '-30 days')
-    )""").fetchone()
-    return row[0] or 0
+        SELECT discord_id FROM order_requests WHERE created_at > {NOW_M(30)}
+    ) AS t""").fetchone()
+    _put_db(db)
+    return row["cnt"] or 0
 
 
 def get_total_scu():
-    row = get_db().execute("SELECT COALESCE(SUM(quantity_scu), 0) FROM community_inventory").fetchone()
-    return row[0] or 0
+    db = get_db()
+    row = db.execute("SELECT COALESCE(SUM(quantity_scu), 0) AS total FROM community_inventory").fetchone()
+    _put_db(db)
+    return row["total"] or 0
 
 
 def get_latest_action_time():
     db = get_db()
-    row = db.execute("""SELECT MAX(ts) FROM (
+    row = db.execute(f"""SELECT MAX(ts) AS max_ts FROM (
         SELECT MAX(synced_at) AS ts FROM community_inventory
         UNION
         SELECT MAX(created_at) AS ts FROM order_requests
         UNION
         SELECT MAX(fulfilled_at) AS ts FROM order_requests
-    )""").fetchone()
-    return row[0] or ""
+    ) AS t""").fetchone()
+    _put_db(db)
+    return row["max_ts"] or ""
 
 
-# --- Notifications ---
+# ─── Notifications ───────────────────────────────────────────────────
 
 @write_db
 def _add_notification(discord_id, title, body, source="system"):
     ensure_user(discord_id)
-    get_db().execute("""INSERT INTO notifications (discord_id, title, body, source)
-                     VALUES (?,?,?,?)""", (discord_id, title, body, source))
+    get_db().execute(f"INSERT INTO notifications (discord_id, title, body, source) VALUES ({Q},{Q},{Q},{Q})",
+                     (discord_id, title, body, source))
 
 
 @write_db
 def _notify_all(title, body, source="system"):
-    users = get_db().execute("SELECT discord_id FROM users").fetchall()
+    db = get_db()
+    users = db.execute("SELECT discord_id FROM users").fetchall()
     for u in users:
         _add_notification(u["discord_id"], title, body, source)
 
 
 def get_notifications(discord_id, limit=None):
-    q = "SELECT * FROM notifications WHERE discord_id=? ORDER BY created_at DESC"
+    db = get_db()
+    q = f"SELECT * FROM notifications WHERE discord_id={Q} ORDER BY created_at DESC"
     params = [discord_id]
     if limit:
-        q += " LIMIT ?"
+        q += f" LIMIT {Q}"
         params.append(limit)
-    return get_db().execute(q, params).fetchall()
+    rows = db.execute(q, params).fetchall()
+    _put_db(db)
+    return rows
 
 
 def get_pending_dm_notifications(limit=20):
-    return get_db().execute(
-        "SELECT * FROM notifications WHERE dm_sent=0 ORDER BY created_at ASC LIMIT ?",
-        (limit,)
-    ).fetchall()
+    db = get_db()
+    rows = db.execute(f"SELECT * FROM notifications WHERE dm_sent=0 ORDER BY created_at ASC LIMIT {Q}",
+                      (limit,)).fetchall()
+    _put_db(db)
+    return rows
 
 
 @write_db
 def mark_notification_dm_sent(notif_id):
-    get_db().execute("UPDATE notifications SET dm_sent=1 WHERE id=?", (notif_id,))
+    get_db().execute(f"UPDATE notifications SET dm_sent=1 WHERE id={Q}", (notif_id,))
 
 
-# --- Sync log ---
+# ─── Sync log ────────────────────────────────────────────────────────
 
 @write_db
 def log_sync(discord_id, direction, status, message):
-    get_db().execute("INSERT INTO sync_log (discord_id, direction, status, message) VALUES (?,?,?,?)",
+    get_db().execute(f"INSERT INTO sync_log (discord_id, direction, status, message) VALUES ({Q},{Q},{Q},{Q})",
                      (discord_id, direction, status, message[:500]))
 
 
-# --- Roles ---
+# ─── Roles ───────────────────────────────────────────────────────────
 
 def _seed_defaults():
     db = get_db()
-    defaults = [("Blocked", 0), ("User", 1), ("Mod", 2), ("Admin", 3)]
-    for name, level in defaults:
-        db.execute("INSERT OR IGNORE INTO roles (name, level) VALUES (?, ?)", (name, level))
-    db.commit()
+    for name, level in [("Blocked", 0), ("User", 1), ("Mod", 2), ("Admin", 3)]:
+        db.execute(f"{IGNORE} INTO roles (name, level) VALUES ({Q},{Q})", (name, level))
     admin_role_id = os.environ.get("DISCORD_ADMIN_ROLE", "")
     if admin_role_id:
-        db.execute("UPDATE roles SET discord_role_id=?, is_env=1 WHERE name='Admin'", (admin_role_id,))
-        db.commit()
+        db.execute(f"UPDATE roles SET discord_role_id={Q}, is_env=1 WHERE name='Admin'", (admin_role_id,))
+    db.commit()
+    _put_db(db)
+
+
+def _close_all_connections():
+    global _pool
+    if _IS_MYSQL:
+        while _pool and not _pool.empty():
+            try:
+                conn = _pool.get_nowait()
+                conn.close()
+            except:
+                pass
+        _pool = queue.Queue(maxsize=20)
+    else:
+        if hasattr(_local, "conn") and _local.conn:
+            try:
+                _local.conn.close()
+            except:
+                pass
+            _local.conn = None
+
+
+def reset_database():
+    tables = ["community_inventory", "order_requests", "notifications", "sync_log",
+              "client_tokens", "api_keys", "sessions", "items", "stations",
+              "systems", "itemcategory", "roles", "users", "config"]
+    db = get_db()
+    if _IS_MYSQL:
+        db.execute("SET FOREIGN_KEY_CHECKS=0")
+    for t in tables:
+        db.execute(f"DROP TABLE IF EXISTS {t}")
+    if _IS_MYSQL:
+        db.execute("SET FOREIGN_KEY_CHECKS=1")
+    db.commit()
+    _put_db(db)
+    if not _IS_MYSQL:
+        if hasattr(_local, "conn") and _local.conn:
+            try:
+                _local.conn.close()
+            except:
+                pass
+            _local.conn = None
+    init_db()
+
+
+def set_dsn(dsn):
+    global _DSN, _IS_MYSQL, DB_PATH, _pool, _pool_lock
+    global Q, NOW, NOW_N, NOW_M, IGNORE, LASTID, COLINFO, UPSERT
+    _close_all_connections()
+    _DSN = dsn
+    DB_PATH = dsn
+    _IS_MYSQL = dsn.startswith("mysql://")
+    if _IS_MYSQL:
+        import pymysql
+        _pool = queue.Queue(maxsize=20)
+        _pool_lock = threading.Lock()
+        Q = "%s"
+        NOW = "NOW()"
+        NOW_N = lambda s: f"(NOW() + INTERVAL {s} SECOND)"
+        NOW_M = lambda d: f"(NOW() - INTERVAL {d} DAY)"
+        IGNORE = "INSERT IGNORE"
+        LASTID = "LAST_INSERT_ID()"
+        COLINFO = lambda t: f"SHOW COLUMNS FROM `{t}`"
+        UPSERT = lambda t, p: "ON DUPLICATE KEY UPDATE"
+    else:
+        _pool = None
+        _pool_lock = None
+        Q = "?"
+        NOW = "datetime('now')"
+        NOW_N = lambda s: f"datetime('now', '+{s} seconds')"
+        NOW_M = lambda d: f"datetime('now', '-{d} days')"
+        IGNORE = "INSERT OR IGNORE"
+        LASTID = "last_insert_rowid()"
+        COLINFO = lambda t: f"PRAGMA table_info({t})"
+        UPSERT = lambda t, p: f"ON CONFLICT({p}) DO UPDATE SET"
+    init_db()
 
 
 def get_roles():
-    return get_db().execute("SELECT * FROM roles ORDER BY is_env ASC, level ASC").fetchall()
+    db = get_db()
+    rows = db.execute("SELECT * FROM roles ORDER BY is_env ASC, level ASC").fetchall()
+    _put_db(db)
+    return rows
 
 
 @write_db
 def add_role(name, level, discord_role_id=None):
-    get_db().execute(
-        "INSERT INTO roles (name, level, discord_role_id) VALUES (?, ?, ?)",
-        (name, level, discord_role_id),
-    )
+    get_db().execute(f"INSERT INTO roles (name, level, discord_role_id) VALUES ({Q},{Q},{Q})",
+                     (name, level, discord_role_id))
 
 
 @write_db
 def update_role(role_id, name, level, discord_role_id=None):
-    get_db().execute("UPDATE roles SET name=?, level=?, discord_role_id=? WHERE id=? AND is_env=0",
+    get_db().execute(f"UPDATE roles SET name={Q}, level={Q}, discord_role_id={Q} WHERE id={Q} AND is_env=0",
                      (name, level, discord_role_id, role_id))
 
 
 @write_db
 def delete_role(role_id):
-    get_db().execute("DELETE FROM roles WHERE id=? AND is_env=0", (role_id,))
+    get_db().execute(f"DELETE FROM roles WHERE id={Q} AND is_env=0", (role_id,))
 
 
 def get_user_role_level(discord_id):
     db = get_db()
-    row = db.execute(
-        "SELECT r.level FROM users u JOIN roles r ON u.role_id=r.id WHERE u.discord_id=?",
-        (discord_id,),
-    ).fetchone()
-    if row:
-        return row["level"]
-    return 1
+    row = db.execute(f"SELECT r.level FROM users u JOIN roles r ON u.role_id=r.id WHERE u.discord_id={Q}",
+                     (discord_id,)).fetchone()
+    _put_db(db)
+    return row["level"] if row else 1
 
 
 def is_banned(discord_id):
-    row = get_db().execute("SELECT banned FROM users WHERE discord_id=?", (discord_id,)).fetchone()
+    db = get_db()
+    row = db.execute(f"SELECT banned FROM users WHERE discord_id={Q}", (discord_id,)).fetchone()
+    _put_db(db)
     return bool(row and row["banned"])
 
 
-# --- User Management ---
+# ─── User Management ─────────────────────────────────────────────────
 
 def get_all_users():
-    return get_db().execute(
-        """SELECT u.*, r.name AS role_name, r.level AS role_level
+    db = get_db()
+    rows = db.execute("""SELECT u.*, r.name AS role_name, r.level AS role_level
         FROM users u LEFT JOIN roles r ON u.role_id=r.id
-        ORDER BY u.created_at DESC"""
-    ).fetchall()
+        ORDER BY u.created_at DESC""").fetchall()
+    _put_db(db)
+    return rows
 
 
 @write_db
 def set_user_role(discord_id, role_id):
     ensure_user(discord_id)
-    get_db().execute("UPDATE users SET role_id=? WHERE discord_id=?", (role_id, discord_id))
+    get_db().execute(f"UPDATE users SET role_id={Q} WHERE discord_id={Q}", (role_id, discord_id))
 
 
 @write_db
 def set_user_banned(discord_id, banned):
-    get_db().execute("UPDATE users SET banned=? WHERE discord_id=?", (1 if banned else 0, discord_id))
+    get_db().execute(f"UPDATE users SET banned={Q} WHERE discord_id={Q}", (1 if banned else 0, discord_id))
 
 
 @write_db
 def clear_user_token(discord_id):
-    get_db().execute("UPDATE users SET access_token='', refresh_token='' WHERE discord_id=?", (discord_id,))
-    get_db().execute("DELETE FROM client_tokens WHERE discord_id=?", (discord_id,))
-    get_db().execute("DELETE FROM sessions WHERE discord_id=?", (discord_id,))
+    get_db().execute(f"UPDATE users SET access_token='', refresh_token='' WHERE discord_id={Q}", (discord_id,))
+    get_db().execute(f"DELETE FROM client_tokens WHERE discord_id={Q}", (discord_id,))
+    get_db().execute(f"DELETE FROM sessions WHERE discord_id={Q}", (discord_id,))
+
+
+@write_db
+def clear_user_api_keys(discord_id):
+    get_db().execute(f"DELETE FROM api_keys WHERE discord_id={Q}", (discord_id,))
 
 
 @write_db
 def delete_user_record(discord_id):
-    get_db().execute("DELETE FROM notifications WHERE discord_id=?", (discord_id,))
-    get_db().execute("DELETE FROM sessions WHERE discord_id=?", (discord_id,))
-    get_db().execute("DELETE FROM client_tokens WHERE discord_id=?", (discord_id,))
-    get_db().execute("DELETE FROM api_keys WHERE discord_id=?", (discord_id,))
-    get_db().execute("DELETE FROM community_inventory WHERE discord_id=?", (discord_id,))
-    get_db().execute("DELETE FROM order_requests WHERE discord_id=?", (discord_id,))
-    get_db().execute("DELETE FROM users WHERE discord_id=?", (discord_id,))
+    for table in ("notifications", "sessions", "client_tokens", "api_keys", "community_inventory", "order_requests", "users"):
+        get_db().execute(f"DELETE FROM {table} WHERE discord_id={Q}", (discord_id,))
 
 
 @write_db
 def update_last_seen(discord_id):
-    get_db().execute("UPDATE users SET last_seen=datetime('now') WHERE discord_id=?", (discord_id,))
+    get_db().execute(f"UPDATE users SET last_seen={NOW} WHERE discord_id={Q}", (discord_id,))
 
 
-# --- Custom Fields (items & stations) ---
+# ─── Custom Fields ───────────────────────────────────────────────────
 
 def get_all_items():
-    return get_db().execute("SELECT * FROM items ORDER BY name").fetchall()
+    db = get_db()
+    rows = db.execute("SELECT * FROM items ORDER BY name").fetchall()
+    _put_db(db)
+    return rows
+
+
+def get_itemcategories():
+    db = get_db()
+    rows = db.execute("SELECT * FROM itemcategory ORDER BY id").fetchall()
+    _put_db(db)
+    return rows
 
 
 @write_db
-def add_custom_item(name):
-    get_db().execute("INSERT OR IGNORE INTO items (name) VALUES (?)", (name,))
+def add_custom_item(name, item_id=None, hasquality=0, code="", catid=1):
+    if item_id:
+        get_db().execute(f"{IGNORE} INTO items (id, name, hasquality, code, catid) VALUES ({Q},{Q},{Q},{Q},{Q})",
+                         (int(item_id), name, int(hasquality), code, int(catid)))
+    else:
+        get_db().execute(f"{IGNORE} INTO items (name, hasquality, code, catid) VALUES ({Q},{Q},{Q},{Q})",
+                         (name, int(hasquality), code, int(catid)))
 
 
 @write_db
 def delete_custom_item(item_id):
-    get_db().execute("DELETE FROM items WHERE id=?", (item_id,))
+    get_db().execute(f"DELETE FROM items WHERE id={Q}", (item_id,))
 
 
 def get_all_stations():
-    return get_db().execute("SELECT * FROM stations ORDER BY name").fetchall()
+    db = get_db()
+    rows = db.execute("SELECT * FROM stations ORDER BY name").fetchall()
+    _put_db(db)
+    return rows
 
 
 @write_db
 def add_custom_station(name):
-    get_db().execute("INSERT OR IGNORE INTO stations (name) VALUES (?)", (name,))
+    get_db().execute(f"{IGNORE} INTO stations (name) VALUES ({Q})", (name,))
 
 
 @write_db
 def delete_custom_station(station_id):
-    get_db().execute("DELETE FROM stations WHERE id=?", (station_id,))
+    get_db().execute(f"DELETE FROM stations WHERE id={Q}", (station_id,))
 
 
-# --- Config ---
+# ─── Config ──────────────────────────────────────────────────────────
 
 def get_config(key, default=""):
-    row = get_db().execute("SELECT value FROM config WHERE key=?", (key,)).fetchone()
+    db = get_db()
+    row = db.execute(f"SELECT value FROM config WHERE key={Q}", (key,)).fetchone()
+    _put_db(db)
     return row["value"] if row else default
 
 
 @write_db
 def set_config(key, value):
-    get_db().execute(
-        "INSERT INTO config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (key, value),
-    )
+    db = get_db()
+    existing = db.execute(f"SELECT 1 AS ok FROM config WHERE key={Q}", (key,)).fetchone()
+    if existing:
+        db.execute(f"UPDATE config SET value={Q} WHERE key={Q}", (value, key))
+    else:
+        db.execute(f"INSERT INTO config (key, value) VALUES ({Q},{Q})", (key, value))
 
 
 @write_db
 def delete_config(key):
-    get_db().execute("DELETE FROM config WHERE key=?", (key,))
+    get_db().execute(f"DELETE FROM config WHERE key={Q}", (key,))
+
+
+def get_schema_version():
+    return int(get_config("schema_version", "0"))
