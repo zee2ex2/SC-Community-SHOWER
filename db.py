@@ -281,6 +281,8 @@ def init_db():
                     print(f"[db] DDL error: {e}", flush=True)
     db.commit()
     _put_db(db)
+    import time
+    time.sleep(1)
     _migrate()
     _seed_defaults()
     existing_ver = int(get_config("schema_version", "0"))
@@ -293,18 +295,27 @@ def _migrate():
     cols_i = _cols("items")
     if "hasquality" not in cols_i:
         db = get_db()
-        db.execute(f"ALTER TABLE items {AC} hasquality INTEGER DEFAULT 0")
-        db.commit()
+        try:
+            db.execute(f"ALTER TABLE items {AC} hasquality INTEGER DEFAULT 0")
+            db.commit()
+        except Exception as e:
+            print(f"[db] migrate items.hasquality: {e}", flush=True)
         _put_db(db)
     if "code" not in cols_i:
         db = get_db()
-        db.execute(f"ALTER TABLE items {AC} code TEXT DEFAULT ''")
-        db.commit()
+        try:
+            db.execute(f"ALTER TABLE items {AC} code TEXT DEFAULT ''")
+            db.commit()
+        except Exception as e:
+            print(f"[db] migrate items.code: {e}", flush=True)
         _put_db(db)
     if "catid" not in cols_i:
         db = get_db()
-        db.execute(f"ALTER TABLE items {AC} catid INTEGER DEFAULT 1")
-        db.commit()
+        try:
+            db.execute(f"ALTER TABLE items {AC} catid INTEGER DEFAULT 1")
+            db.commit()
+        except Exception as e:
+            print(f"[db] migrate items.catid: {e}", flush=True)
         _put_db(db)
 
     cols_u = _cols("users")
@@ -312,15 +323,21 @@ def _migrate():
     for col, dtype in [("display_name", "TEXT"), ("role_id", "INTEGER"), ("banned", "INTEGER DEFAULT 0"), ("last_seen", ts_type)]:
         if col not in cols_u:
             db = get_db()
-            db.execute(f"ALTER TABLE users {AC} {col} {dtype}")
-            db.commit()
+            try:
+                db.execute(f"ALTER TABLE users {AC} {col} {dtype}")
+                db.commit()
+            except Exception as e:
+                print(f"[db] migrate users.{col}: {e}", flush=True)
             _put_db(db)
 
     cols_n = _cols("notifications")
-    if "dm_sent" not in cols_n:
+    if cols_n and "dm_sent" not in cols_n:
         db = get_db()
-        db.execute(f"ALTER TABLE notifications {AC} dm_sent INTEGER DEFAULT 0")
-        db.commit()
+        try:
+            db.execute(f"ALTER TABLE notifications {AC} dm_sent INTEGER DEFAULT 0")
+            db.commit()
+        except Exception as e:
+            print(f"[db] migrate notifications.dm_sent: {e}", flush=True)
         _put_db(db)
 
     # Seed itemcategory
