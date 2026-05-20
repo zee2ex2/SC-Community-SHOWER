@@ -239,3 +239,35 @@ function editRole(id, name, level, discordRoleId) {
   }
   document.getElementById('role-overlay').style.display = 'flex';
 }
+
+// --- Live event stream ---
+(function() {
+  var es = new EventSource("/events");
+  es.onmessage = function(e) {
+    try {
+      var evt = JSON.parse(e.data);
+      if (evt.type === "message") {
+        showBanner(evt.data.text, evt.data.kind);
+      }
+    } catch(_) {}
+  };
+})();
+
+function showBanner(text, kind) {
+  var container = document.querySelector(".messages");
+  if (!container) {
+    container = document.createElement("div");
+    container.className = "messages";
+    var header = document.querySelector(".topbar");
+    header.parentNode.insertBefore(container, header.nextSibling);
+  }
+  var msg = document.createElement("div");
+  msg.className = "message " + kind;
+  msg.innerHTML = "<span>" + text + '</span><button class="dismiss-btn" onclick="this.parentElement.remove()">dismiss</button>';
+  container.appendChild(msg);
+  if (kind === "success") {
+    setTimeout(function() {
+      if (msg.parentElement) msg.remove();
+    }, 6000);
+  }
+}

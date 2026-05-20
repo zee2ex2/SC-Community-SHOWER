@@ -115,29 +115,73 @@ input[type=number] {
 }
 
 .messages {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 18px;
+  display: flex;
+  flex-direction: column;
 }
 
 .message {
-  border-radius: 8px;
-  padding: 12px 14px;
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  color: #fff;
+  border-radius: 0;
+  font-size: 11px;
+  font-family: monospace;
+}
+
+.message + .message {
+  border-top: 1px solid rgba(0,0,0,0.3);
 }
 
 .message.success {
   background: var(--ok-bg);
-  color: var(--accent);
+  color: #fff;
+  animation: slideUp 0.5s ease 5.5s forwards;
+}
+
+@keyframes slideUp {
+  to {
+    transform: translateY(-100%);
+    max-height: 0;
+    opacity: 0;
+    padding: 0 14px;
+    margin: 0;
+    border: none;
+    overflow: hidden;
+  }
 }
 
 .message.error {
   background: var(--danger-bg);
-  color: var(--danger);
+  color: #fff;
 }
 
 .message.warning {
   background: var(--hold-bg);
-  color: var(--warning);
+  color: #fff;
+}
+
+.dismiss-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  font-size: 9px;
+  vertical-align: super;
+  opacity: 0.6;
+  padding: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
+  color: inherit;
+  min-height: 0;
+  min-width: 0;
+}
+
+.dismiss-btn:hover {
+  opacity: 1;
+  text-decoration: underline;
 }
 
 .summary-grid {

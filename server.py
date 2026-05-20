@@ -26,6 +26,7 @@ import db
 import render
 import ws_server
 from db import Q
+from render import pop_messages, push_message, push_event, _event_queue, _event_cond
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "9200"))
@@ -122,6 +123,29 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/static/shower.js":
             self.serve_static(BASE_DIR / "static" / "shower.js", "application/javascript; charset=utf-8")
+            return
+
+        if path == "/events":
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            idx = len(_event_queue)
+            try:
+                while True:
+                    with _event_cond:
+                        if idx < len(_event_queue):
+                            evt = _event_queue[idx]
+                            idx += 1
+                            self.wfile.write(f"data: {json.dumps(evt)}\n\n".encode())
+                            self.wfile.flush()
+                        else:
+                            _event_cond.wait(timeout=30)
+                            self.wfile.write(b": heartbeat\n\n")
+                            self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
             return
 
         if path.startswith("/api/"):

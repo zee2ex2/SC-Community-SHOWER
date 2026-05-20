@@ -1,9 +1,30 @@
 import html as html_mod
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlencode
 
 import db
+
+_message_queue = []
+_event_queue = []
+_event_cond = threading.Condition()
+
+
+def push_message(text, kind="success"):
+    _message_queue.append({"text": text, "kind": kind})
+
+
+def pop_messages():
+    msgs = list(_message_queue)
+    _message_queue.clear()
+    return msgs
+
+
+def push_event(event_type, data):
+    with _event_cond:
+        _event_queue.append({"type": event_type, "data": data})
+        _event_cond.notify_all()
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -64,8 +85,9 @@ def base_html(title, content, user=None, notif_count=0):
 <header class="topbar">
 <div><h1>Sho.W.E.R</h1><p class="network-info">{esc(GUILD_NAME)}</p></div>
 <nav class="nav-links">{nav}<button class="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme">&#x263E;</button></nav>
-</header>
-<main>{content}</main>
+    </header>
+    {notice_html("")}
+    <main>{content}</main>
 <footer class="footer">
   <span>Community Shopfront &middot; Workorder &middot; Exchange Registry — {esc(GUILD_NAME)}</span>
   <span>v{db.SHOWER_VERSION}</span>
@@ -87,8 +109,10 @@ def notice_html(qs):
         val = qs.get(key, "")
         if val:
             msg = val if val != "1" else key.replace("_", " ").title()
-            html += f'<div class="messages"><div class="message {cls}">{esc(msg)}</div></div>'
+            html += f'<div class="messages"><div class="message {cls}">{esc(msg)}<button class="dismiss-btn" onclick="this.parentElement.remove()">dismiss</button></div></div>'
             break
+    for msg in pop_messages():
+        html += f'<div class="messages"><div class="message {msg["kind"]}">{esc(msg["text"])}<button class="dismiss-btn" onclick="this.parentElement.remove()">dismiss</button></div></div>'
     return html
 
 
