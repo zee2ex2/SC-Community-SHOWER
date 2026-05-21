@@ -1,6 +1,5 @@
 import os
 
-from .engine import engine, SessionLocal
 from .models import Base, Item, ItemCategory, System, Station, Role, Config
 
 
@@ -8,6 +7,7 @@ SCHEMA_VERSION = 3
 
 
 def init_db():
+    from .engine import engine
     try:
         Base.metadata.create_all(engine)
         # Force commit DDL for backends with autocommit=False (ODBC)
@@ -37,6 +37,7 @@ def init_db():
 
 
 def _seed_itemcategory():
+    from .engine import SessionLocal
     with SessionLocal() as session:
         if session.query(ItemCategory).count() > 0:
             return
@@ -49,6 +50,7 @@ def _seed_itemcategory():
 
 
 def _seed_items():
+    from .engine import SessionLocal
     with SessionLocal() as session:
         if session.query(Item).count() > 0:
             return
@@ -141,6 +143,7 @@ def _seed_items():
 
 
 def _seed_stations():
+    from .engine import SessionLocal
     with SessionLocal() as session:
         if session.query(Station).count() > 0:
             return
@@ -174,6 +177,7 @@ def _seed_stations():
 
 
 def _seed_systems():
+    from .engine import SessionLocal
     with SessionLocal() as session:
         if session.query(System).count() > 0:
             return
@@ -201,6 +205,7 @@ def _seed_systems():
 
 
 def _seed_roles():
+    from .engine import SessionLocal
     with SessionLocal() as session:
         if session.query(Role).count() > 0:
             return
@@ -214,6 +219,7 @@ def _seed_roles():
 
 
 def _set_schema_version():
+    from .engine import SessionLocal
     with SessionLocal() as session:
         existing = session.query(Config).filter_by(key="schema_version").first()
         ver = int(existing.value) if existing else 0
