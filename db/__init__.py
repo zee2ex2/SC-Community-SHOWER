@@ -31,6 +31,7 @@ from .crud import (
 from .message import _event_queue, _event_cond
 
 SHOWER_VERSION = "0.2.0"
+DB_PATH = _DSN
 
 # Backward compat: Q is always "?" with SQLAlchemy (handles paramstyle per dialect)
 Q = "?"
