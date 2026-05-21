@@ -17,8 +17,7 @@ def _sa_url():
 
 url = _sa_url()
 if url.startswith("sqlite"):
-    engine = create_engine(url, pool_pre_ping=True, connect_args={"timeout": 30})
-    # Enable WAL mode on all SQLite connections
+    engine = create_engine(url, poolclass=NullPool, connect_args={"timeout": 30})
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_connection, connection_record):
         cursor = dbapi_connection.cursor()
@@ -37,12 +36,27 @@ def _set_engine(new_engine):
     SessionLocal.configure(bind=engine)
 
 _local_tx = threading.local()
+_local_sessions = threading.local()
 
 
 def get_session():
     if hasattr(_local_tx, "session") and _local_tx.session is not None:
         return _local_tx.session
-    return SessionLocal()
+    # Track and close previous standalone session for this thread
+    if hasattr(_local_sessions, "last") and _local_sessions.last is not None:
+        try:
+            _local_sessions.last.close()
+        except Exception:
+            pass
+    s = SessionLocal()
+    _local_sessions.last = s
+    return s
+
+
+def close_session(session):
+    """Close a session unless it belongs to an active transaction."""
+    if not hasattr(_local_tx, "session") or _local_tx.session is not session:
+        session.close()
 
 
 def write_db(func):
