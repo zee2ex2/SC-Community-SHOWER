@@ -9,15 +9,38 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-# Load .env file before any module imports that read env vars
-env_path = Path(__file__).resolve().parent / '.env'
-if env_path.exists():
-    for line in env_path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith('#') or '=' not in line:
-            continue
-        key, _, val = line.partition('=')
-        os.environ.setdefault(key.strip(), val.strip())
+
+def get_data_dir():
+    if "SHOWER_DATA" in os.environ:
+        d = Path(os.environ["SHOWER_DATA"])
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    # Try home config directory (works everywhere)
+    home_cfg = Path.home() / ".config" / "shower"
+    try:
+        home_cfg.mkdir(parents=True, exist_ok=True)
+        return home_cfg
+    except (OSError, PermissionError):
+        pass
+    # Fall back to Docker volume
+    dkr = Path("/data")
+    dkr.mkdir(parents=True, exist_ok=True)
+    return dkr
+
+
+DATA_DIR = get_data_dir()
+ENV_PATH = DATA_DIR / ".env"
+
+# Load .env from persistent data directory first, then fall back to project root
+for candidate in [ENV_PATH, Path(__file__).resolve().parent / '.env']:
+    if candidate.exists():
+        for line in candidate.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, _, val = line.partition('=')
+            os.environ.setdefault(key.strip(), val.strip())
+        break
 
 import api_lib
 import auth
@@ -33,7 +56,6 @@ PORT = int(os.environ.get("PORT", "9200"))
 WS_PORT_STR = os.environ.get("WS_PORT", "")
 WS_PORT = int(WS_PORT_STR) if WS_PORT_STR else None
 BASE_DIR = Path(__file__).resolve().parent
-ENV_PATH = BASE_DIR / ".env"
 
 
 def _is_configured():
