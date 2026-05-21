@@ -12,6 +12,19 @@ def init_db():
         Base.metadata.create_all(engine)
     except Exception as e:
         print(f"[db] create_all error: {e}", flush=True)
+    # Verify tables were created
+    from sqlalchemy import inspect
+    try:
+        inspector = inspect(engine)
+        existing = inspector.get_table_names()
+        expected = sorted(Base.metadata.tables.keys())
+        missing = [t for t in expected if t not in existing]
+        if missing:
+            print(f"[db] Missing tables after create_all: {missing}", flush=True)
+        else:
+            print(f"[db] All {len(expected)} tables created OK", flush=True)
+    except Exception as e:
+        print(f"[db] Table verification error: {e}", flush=True)
     _seed_itemcategory()
     _seed_items()
     _seed_stations()
