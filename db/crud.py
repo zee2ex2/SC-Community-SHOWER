@@ -368,7 +368,7 @@ def get_user_orders(discord_id, limit=None):
 
 def get_active_users_count():
     session = get_session()
-    cutoff = func.now() - timedelta(days=30)
+    cutoff = datetime.utcnow() - timedelta(days=30)
     discord_ids = set()
     for r in session.query(CommunityInventory.discord_id).filter(
             CommunityInventory.synced_at > cutoff).distinct():
