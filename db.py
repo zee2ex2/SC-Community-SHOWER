@@ -38,7 +38,19 @@ def _new_conn():
     if _IS_ODBC:
         import pyodbc
         import time as _time
-        # Check available drivers for diagnostics
+        # Patch pyodbc rows to support dict-style access
+        if not hasattr(pyodbc, '_dict_patched'):
+            pyodbc._dict_patched = True
+            _orig_fetchone = pyodbc.Cursor.fetchone
+            _orig_fetchall = pyodbc.Cursor.fetchall
+            def _dict_fetchone(self):
+                row = _orig_fetchone(self)
+                return dict(row) if row else None
+            def _dict_fetchall(self):
+                rows = _orig_fetchall(self)
+                return [dict(r) for r in rows]
+            pyodbc.Cursor.fetchone = _dict_fetchone
+            pyodbc.Cursor.fetchall = _dict_fetchall
         try:
             return pyodbc.connect(_DSN, autocommit=False, timeout=10)
         except pyodbc.InterfaceError as e:
