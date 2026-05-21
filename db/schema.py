@@ -34,6 +34,38 @@ def init_db():
     _seed_systems()
     _seed_roles()
     _set_schema_version()
+    _fix_text_columns()
+
+
+def _fix_text_columns():
+    """Alter TEXT columns to VARCHAR on SQL Server for comparison compatibility."""
+    from .engine import engine
+    if not engine or "mssql" not in engine.name:
+        return
+    from sqlalchemy import text, inspect
+    fixes = {
+        "order_requests": ["status", "item_name"],
+        "users": ["role_ids", "display_name"],
+        "items": ["code"],
+        "stations": ["code"],
+        "notifications": ["source", "title"],
+        "community_inventory": ["item_name"],
+        "sync_log": ["direction", "status"],
+    }
+    lengths = {"status": 32, "item_name": 255, "role_ids": 255, "display_name": 128,
+               "code": 32, "source": 64, "title": 255, "direction": 32}
+    with engine.connect() as conn:
+        for table, columns in fixes.items():
+            for col in columns:
+                row = conn.execute(
+                    text("SELECT DATA_TYPE FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME=:t AND COLUMN_NAME=:c"),
+                    {"t": table, "c": col}
+                ).first()
+                if row and row[0].lower() == "text":
+                    length = lengths.get(col, 255)
+                    conn.execute(text(f"ALTER TABLE [{table}] ALTER COLUMN [{col}] VARCHAR({length})"))
+                    print(f"[db] Fixed {table}.{col}: TEXT -> VARCHAR({length})", flush=True)
+        conn.commit()
 
 
 def _seed_itemcategory():
