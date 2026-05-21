@@ -72,9 +72,10 @@ def _assign_user_role(discord_id, role_ids):
 
 
 def get_user_by_session(session_id):
+    from sqlalchemy.orm import joinedload
     from .models import Session as Sess
     session = get_session()
-    return session.query(User).join(Sess).outerjoin(Role).filter(
+    return session.query(User).options(joinedload(User.role)).join(Sess).filter(
         Sess.session_id == session_id,
         or_(Sess.expires_at.is_(None), Sess.expires_at > func.now()),
     ).first()
