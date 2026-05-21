@@ -8,7 +8,10 @@ SCHEMA_VERSION = 3
 
 
 def init_db():
-    Base.metadata.create_all(engine)
+    try:
+        Base.metadata.create_all(engine)
+    except Exception as e:
+        print(f"[db] create_all error: {e}", flush=True)
     _seed_itemcategory()
     _seed_items()
     _seed_stations()

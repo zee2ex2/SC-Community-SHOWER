@@ -122,7 +122,7 @@ class Notification(Base):
     title: Mapped[str] = mapped_column(String(255))
     body: Mapped[str] = mapped_column(Text, default="", nullable=True)
     source: Mapped[str] = mapped_column(String(64), default="system")
-    read: Mapped[bool] = mapped_column(Boolean, default=False)
+    read: Mapped[bool] = mapped_column("read", Boolean, default=False, quote=True)
     dm_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -141,13 +141,13 @@ class SyncLog(Base):
 
 class Config(Base):
     __tablename__ = "config"
-    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    key: Mapped[str] = mapped_column("key", String(255), primary_key=True, quote=True)
     value: Mapped[str] = mapped_column(Text, nullable=True)
 
 
 class ApiKey(Base):
     __tablename__ = "api_keys"
-    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    key: Mapped[str] = mapped_column("key", String(64), primary_key=True, quote=True)
     discord_id: Mapped[str] = mapped_column(ForeignKey("users.discord_id"))
     label: Mapped[str] = mapped_column(String(255), default="", nullable=True)
     last_used: Mapped[datetime] = mapped_column(DateTime, nullable=True)
