@@ -33,8 +33,35 @@ PORT = int(os.environ.get("PORT", "9200"))
 WS_PORT_STR = os.environ.get("WS_PORT", "")
 WS_PORT = int(WS_PORT_STR) if WS_PORT_STR else None
 BASE_DIR = Path(__file__).resolve().parent
+ENV_PATH = BASE_DIR / ".env"
 
-_jock_oauth_states = {}
+
+def _is_configured():
+    if not ENV_PATH.exists():
+        return False
+    config = {}
+    for line in ENV_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        config[k.strip()] = v.strip()
+    return bool(config.get("SHOWER_DB") and config.get("DISCORD_CLIENT_ID"))
+
+
+def _write_env(updates):
+    """Write or update .env file with given key=value pairs."""
+    config = {}
+    if ENV_PATH.exists():
+        for line in ENV_PATH.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            config[k.strip()] = v.strip()
+    config.update(updates)
+    lines = [f"{k}={v}" for k, v in config.items()]
+    ENV_PATH.write_text("\n".join(lines) + "\n")
 
 
 def esc(val):
@@ -125,8 +152,32 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_static(BASE_DIR / "static" / "shower.js", "application/javascript; charset=utf-8")
             return
 
+        # ─── Setup / first-run detection ─────────────────────────────
+        if not _is_configured():
+            if path == "/setup" and method == "GET":
+                self.respond(render.setup_page())
+                return
+            if path == "/setup/test-db" and method == "POST":
+                self._handle_setup_test_db(data)
+                return
+            if path == "/setup/save" and method == "POST":
+                self._handle_setup_save(data)
+                return
+            if path == "/setup/restart":
+                self._handle_restart()
+                return
+            if path in ("/static/styles.css", "/static/shower.js"):
+                return  # already handled above
+            self.redirect("/setup")
+            return
+
         if path == "/db-status":
+            if db.engine is None:
+                self.respond("<html><body><h1>Database Status</h1><pre>Not configured</pre><p><a href='/setup'>Run Setup</a></p></body></html>")
+                return
             url = str(db.engine.url)
+            if hasattr(db.engine.url, "password") and db.engine.url.password:
+                url = url.replace(db.engine.url.password, "****")
             self.respond(f"""<html><body><h1>Database Status</h1>
 <pre>Engine: {url}
 Tables: {len(db.Base.metadata.tables)} defined
@@ -843,7 +894,7 @@ Tables: {len(db.Base.metadata.tables)} defined
             for key in ("guild_name", "discord_client_id", "discord_client_secret", "discord_bot_token"):
                 val = data.get(key, "").strip()
                 if val:
-                    db.set_config(key, val)
+                    _write_env({key.upper(): val})
             self.redirect("/admin?saved=1")
 
         elif action == "reboot_bot":
@@ -877,11 +928,8 @@ Tables: {len(db.Base.metadata.tables)} defined
             if not new_dsn:
                 self.redirect("/admin?error=missing_dsn")
                 return
-            try:
-                db.set_dsn(new_dsn)
-                self.redirect("/admin?saved=1")
-            except Exception as e:
-                self.redirect(f"/admin?error={urllib.parse.quote(str(e))}")
+            _write_env({"SHOWER_DB": new_dsn})
+            self.redirect("/admin?saved=1?restart=1")
 
         else:
             self.redirect("/admin?error=unknown_action")
@@ -908,6 +956,87 @@ Tables: {len(db.Base.metadata.tables)} defined
         self.send_header("Location", location)
         self.send_header("Content-Length", "0")
         self.end_headers()
+
+    def _handle_setup_test_db(self, data):
+        db_type = data.get("db_type", "")
+        conn_str = data.get("connection_string", "").strip()
+        try:
+            if db_type == "sqlite":
+                path = Path(conn_str) if conn_str else BASE_DIR / "shower_data" / "shower.db"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                url = f"sqlite:///{path.resolve()}"
+            elif db_type == "mysql":
+                url = conn_str.replace("mysql://", "mysql+pymysql://", 1)
+            elif db_type == "odbc":
+                if not conn_str:
+                    self.respond_json({"ok": False, "error": "Connection string required"})
+                    return
+                import pyodbc
+                test = pyodbc.connect(conn_str, autocommit=False, timeout=10)
+                test.close()
+                from sqlalchemy.engine import URL
+                url = URL.create("mssql+pyodbc", query={"odbc_connect": conn_str})
+            else:
+                self.respond_json({"ok": False, "error": "Unknown database type"})
+                return
+            from sqlalchemy import create_engine, text
+            engine = create_engine(url, pool_pre_ping=True)
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            self.respond_json({"ok": True})
+        except Exception as e:
+            self.respond_json({"ok": False, "error": str(e)})
+
+    def _handle_setup_save(self, data):
+        from sqlalchemy.engine import URL
+        from sqlalchemy import create_engine
+        db_type = data.get("db_type", "sqlite")
+        if db_type == "sqlite":
+            path = data.get("db_sqlite", "shower_data/shower.db")
+            p = BASE_DIR / path if not path.startswith("/") else Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            db_dsn = str(p)
+        elif db_type == "mysql":
+            db_dsn = data.get("db_mysql", "")
+        elif db_type == "odbc":
+            db_dsn = data.get("db_odbc", "")
+        else:
+            self.respond_json({"ok": False, "error": "Unknown database type"})
+            return
+        if not db_dsn:
+            self.respond_json({"ok": False, "error": "Connection string is required"})
+            return
+        # Build env
+        env = {
+            "DISCORD_CLIENT_ID": data.get("discord_client_id", ""),
+            "DISCORD_CLIENT_SECRET": data.get("discord_client_secret", ""),
+            "DISCORD_GUILD_ID": data.get("discord_guild_id", ""),
+            "DISCORD_GUILD_NAME": data.get("discord_guild_name", ""),
+            "DISCORD_REDIRECT_URI": data.get("discord_redirect_uri", "http://localhost:9200/auth/callback"),
+            "DISCORD_ADMIN_ROLE": data.get("discord_admin_role", ""),
+            "DISCORD_BOT_TOKEN": data.get("discord_bot_token", ""),
+            "SHOWER_DB": db_dsn,
+        }
+        _write_env(env)
+        # Initialize database with new engine
+        if db_type in ("mysql",):
+            sa_url = db_dsn.replace("mysql://", "mysql+pymysql://", 1)
+        elif db_type == "odbc":
+            sa_url = URL.create("mssql+pyodbc", query={"odbc_connect": db_dsn})
+        else:
+            sa_url = f"sqlite:///{db_dsn}" if not db_dsn.startswith("/") else f"sqlite://{db_dsn}"
+        new_engine = create_engine(sa_url, pool_pre_ping=True)
+        # Set the engine before init_db so schema.py uses the right one
+        db._set_engine(new_engine)
+        db.init_db()
+        db.push_message("Configuration saved. Restarting...", "success")
+        self.respond_json({"ok": True})
+
+    def _handle_restart(self):
+        self.respond("<html><body><h1>Restarting...</h1><script>setTimeout(function(){window.location.href='/'},3000)</script></body></html>")
+        import threading, os, time, sys, subprocess
+        t = threading.Thread(target=lambda: (time.sleep(0.5), os._exit(0)), daemon=True)
+        t.start()
 
     def serve_static(self, path, content_type):
         if not path.exists():

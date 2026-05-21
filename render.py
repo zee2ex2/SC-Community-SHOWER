@@ -95,6 +95,146 @@ def base_html(title, content, user=None, notif_count=0):
 </body></html>"""
 
 
+def setup_page():
+    return """<!doctype html>
+<html lang="en" class="dark">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Setup -- Sho.W.E.R</title>
+<link rel="stylesheet" href="/static/styles.css?v=4">
+<script src="/static/shower.js?v=2"></script>
+<style>
+.setup-wrap { max-width:600px; margin:40px auto; }
+.setup-wrap h1 { font-size:24px; margin-bottom:4px; }
+.setup-wrap p { color:var(--muted); font-size:13px; margin-bottom:20px; }
+.setup-wrap .panel { margin-top:0; }
+.setup-wrap label { display:block; color:var(--muted); font-size:12px; font-weight:600; text-transform:uppercase; margin-top:12px; margin-bottom:4px; }
+.setup-wrap input, .setup-wrap select { width:100%; box-sizing:border-box; }
+.setup-wrap .test-result { font-size:12px; margin-top:4px; }
+.db-type-group { display:flex; gap:8px; margin-top:12px; }
+.db-type-group button { flex:1; text-align:center; }
+.db-type-group button.active { background:var(--green); }
+</style>
+</head>
+<body>
+<header class="topbar"><div><h1>Sho.W.E.R</h1><p class="network-info">Setup</p></div></header>
+<main>
+<div class="setup-wrap">
+  <h1>Welcome to SHOWER</h1>
+  <p>Configure your instance to get started.</p>
+  <form id="setup-form" onsubmit="return saveSetup(event)">
+  <section class="panel">
+    <div class="section-heading"><h2>Discord OAuth</h2></div>
+    <label>Client ID <span style="color:var(--danger)">*</span></label>
+    <input type="text" name="discord_client_id" required>
+    <label>Client Secret <span style="color:var(--danger)">*</span></label>
+    <input type="password" name="discord_client_secret" required>
+    <label>Redirect URI</label>
+    <input type="text" name="discord_redirect_uri" placeholder="http://localhost:9200/auth/callback">
+    <label>Guild ID</label>
+    <input type="text" name="discord_guild_id">
+    <label>Guild Name</label>
+    <input type="text" name="discord_guild_name">
+    <label>Admin Role ID</label>
+    <input type="text" name="discord_admin_role">
+    <label>Bot Token</label>
+    <input type="password" name="discord_bot_token">
+  </section>
+  <section class="panel">
+    <div class="section-heading"><h2>Database</h2></div>
+    <label>Type</label>
+    <select name="db_type" onchange="toggleDbType(this)">
+      <option value="sqlite">SQLite (local file)</option>
+      <option value="mysql">MySQL</option>
+      <option value="odbc">SQL Server (ODBC)</option>
+    </select>
+    <div id="db-sqlite">
+      <label>File Path</label>
+      <input type="text" name="db_sqlite" value="shower_data/shower.db">
+    </div>
+    <div id="db-mysql" style="display:none">
+      <label>Connection String</label>
+      <input type="text" name="db_mysql" placeholder="mysql://user:pass@host:3306/db">
+    </div>
+    <div id="db-odbc" style="display:none">
+      <label>Connection String</label>
+      <input type="password" name="db_odbc" placeholder='Driver={ODBC Driver 18 for SQL Server};Server=tcp:...'>
+    </div>
+    <div style="margin-top:12px">
+      <button type="button" class="button blue" onclick="testConnection()">Test Connection</button>
+      <span id="db-test-result" class="test-result"></span>
+    </div>
+  </section>
+  <div style="margin-top:16px;display:flex;gap:8px">
+    <button type="submit" class="button green" style="flex:1">Save Configuration &amp; Restart</button>
+  </div>
+  </form>
+</div>
+</main>
+<script>
+var dbTested = false;
+function toggleDbType(sel) {
+  document.getElementById('db-sqlite').style.display = sel.value === 'sqlite' ? 'block' : 'none';
+  document.getElementById('db-mysql').style.display = sel.value === 'mysql' ? 'block' : 'none';
+  document.getElementById('db-odbc').style.display = sel.value === 'odbc' ? 'block' : 'none';
+  dbTested = false;
+  document.getElementById('db-test-result').textContent = '';
+}
+function testConnection() {
+  var sel = document.querySelector('select[name=db_type]');
+  var field = document.querySelector('[name=db_' + sel.value + ']');
+  var result = document.getElementById('db-test-result');
+  result.textContent = 'Testing...';
+  result.style.color = 'var(--muted)';
+  fetch('/setup/test-db', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({db_type: sel.value, connection_string: field.value})
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.ok) {
+      result.textContent = 'Connected!';
+      result.style.color = 'var(--accent)';
+      dbTested = true;
+    } else {
+      result.textContent = d.error;
+      result.style.color = 'var(--danger)';
+    }
+  }).catch(function(e) {
+    result.textContent = 'Request failed';
+    result.style.color = 'var(--danger)';
+  });
+}
+function saveSetup(e) {
+  e.preventDefault();
+  if (!dbTested && !confirm('Connection not tested. Save anyway?')) return;
+  var btn = e.target.querySelector('button[type=submit]');
+  btn.textContent = 'Saving...';
+  btn.disabled = true;
+  var form = document.getElementById('setup-form');
+  var data = {};
+  new FormData(form).forEach(function(v, k) { data[k] = v; });
+  fetch('/setup/save', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data)
+  }).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.ok) {
+      btn.textContent = 'Restarting...';
+      setTimeout(function() { window.location.href = '/setup/restart'; }, 500);
+    } else {
+      btn.textContent = 'Save Failed';
+      btn.disabled = false;
+      alert(d.error);
+    }
+  }).catch(function(e) {
+    btn.textContent = 'Save Failed';
+    btn.disabled = false;
+    alert(e.message);
+  });
+}
+</script>
+</body></html>"""
+
+
 def page_panel(heading, body_html, back_url=None, extra_actions=""):
     back = f'<a class="button ghost" href="{esc(back_url)}">Back</a>' if back_url else ""
     return f"""<section class="panel">
@@ -663,15 +803,16 @@ def admin_page(user, db_obj, qs, discord_roles=None, bot_token_set=False):
         </form>
         <hr style="border:none;border-top:1px solid var(--line);margin:16px 0">
         <h3 style="margin-bottom:8px">Database</h3>
-        <p class="muted" style="font-size:12px;word-break:break-all;margin-bottom:8px">Current: {esc(db_obj.DB_PATH)}</p>
+        <p class="muted" style="font-size:12px;margin-bottom:8px">Status: <strong>Configured</strong></p>
         <form method="post" action="/admin" class="inline-form" style="flex-direction:column;align-items:stretch">
             <input type="hidden" name="action" value="change_db">
             <div class="filter-group">
-                <label>Connection String</label>
-                <input type="text" name="dsn" placeholder="file path for SQLite, or mysql://user:pass@host/db" style="width:100%">
+                <label>Connection String (leave blank to keep current)</label>
+                <input type="password" name="dsn" placeholder="New connection string" style="width:100%" autocomplete="off">
             </div>
-            <div style="margin-top:8px">
-                <button type="submit" class="button blue">Change Database</button>
+            <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+                <button type="submit" class="button blue">Save Database</button>
+                <button type="button" class="button ghost" onclick="restartServer()">Restart App</button>
             </div>
         </form>
         <div style="margin-top:12px">
@@ -679,7 +820,14 @@ def admin_page(user, db_obj, qs, discord_roles=None, bot_token_set=False):
                 <input type="hidden" name="action" value="reset_db">
                 <button type="submit" class="button red" style="background:var(--red)">Reset Database</button>
             </form>
-        </div>"""
+        </div>
+        <script>
+        function restartServer() {{
+            if (confirm('Restart SHOWER? The page will reload.')) {{
+                fetch('/setup/restart').then(function() {{ location.reload(); }});
+            }}
+        }}
+        </script>"""
 
     server_settings = config_form or '<p class="muted">Admin access required.</p>'
 
