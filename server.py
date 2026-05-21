@@ -1012,49 +1012,54 @@ Tables: {len(db.Base.metadata.tables)} defined
             self.respond_json({"ok": False, "error": str(e)})
 
     def _handle_setup_save(self, data):
-        from sqlalchemy.engine import URL
-        from sqlalchemy import create_engine
-        db_type = data.get("db_type", "sqlite")
-        if db_type == "sqlite":
-            path = data.get("db_sqlite", "shower_data/shower.db")
-            p = BASE_DIR / path if not path.startswith("/") else Path(path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            db_dsn = str(p)
-        elif db_type == "mysql":
-            db_dsn = data.get("db_mysql", "")
-        elif db_type == "odbc":
-            db_dsn = data.get("db_odbc", "")
-        else:
-            self.respond_json({"ok": False, "error": "Unknown database type"})
-            return
-        if not db_dsn:
-            self.respond_json({"ok": False, "error": "Connection string is required"})
-            return
-        # Build env
-        env = {
-            "DISCORD_CLIENT_ID": data.get("discord_client_id", ""),
-            "DISCORD_CLIENT_SECRET": data.get("discord_client_secret", ""),
-            "DISCORD_GUILD_ID": data.get("discord_guild_id", ""),
-            "DISCORD_GUILD_NAME": data.get("discord_guild_name", ""),
-            "DISCORD_REDIRECT_URI": data.get("discord_redirect_uri", "http://localhost:9200/auth/callback"),
-            "DISCORD_ADMIN_ROLE": data.get("discord_admin_role", ""),
-            "DISCORD_BOT_TOKEN": data.get("discord_bot_token", ""),
-            "SHOWER_DB": db_dsn,
-        }
-        _write_env(env)
-        # Initialize database with new engine
-        if db_type in ("mysql",):
-            sa_url = db_dsn.replace("mysql://", "mysql+pymysql://", 1)
-        elif db_type == "odbc":
-            sa_url = URL.create("mssql+pyodbc", query={"odbc_connect": db_dsn})
-        else:
-            sa_url = f"sqlite:///{db_dsn}" if not db_dsn.startswith("/") else f"sqlite://{db_dsn}"
-        new_engine = create_engine(sa_url, pool_pre_ping=True)
-        # Set the engine before init_db so schema.py uses the right one
-        db._set_engine(new_engine)
-        db.init_db()
-        db.push_message("Configuration saved. Restarting...", "success")
-        self.respond_json({"ok": True})
+        try:
+            from sqlalchemy.engine import URL
+            from sqlalchemy import create_engine
+            db_type = data.get("db_type", "sqlite")
+            if db_type == "sqlite":
+                path = data.get("db_sqlite", "shower_data/shower.db")
+                p = BASE_DIR / path if not path.startswith("/") else Path(path)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                db_dsn = str(p)
+            elif db_type == "mysql":
+                db_dsn = data.get("db_mysql", "")
+            elif db_type == "odbc":
+                db_dsn = data.get("db_odbc", "")
+            else:
+                self.respond_json({"ok": False, "error": "Unknown database type"})
+                return
+            if not db_dsn:
+                self.respond_json({"ok": False, "error": "Connection string is required"})
+                return
+            # Build env
+            env = {
+                "DISCORD_CLIENT_ID": data.get("discord_client_id", ""),
+                "DISCORD_CLIENT_SECRET": data.get("discord_client_secret", ""),
+                "DISCORD_GUILD_ID": data.get("discord_guild_id", ""),
+                "DISCORD_GUILD_NAME": data.get("discord_guild_name", ""),
+                "DISCORD_REDIRECT_URI": data.get("discord_redirect_uri", "http://localhost:9200/auth/callback"),
+                "DISCORD_ADMIN_ROLE": data.get("discord_admin_role", ""),
+                "DISCORD_BOT_TOKEN": data.get("discord_bot_token", ""),
+                "SHOWER_DB": db_dsn,
+            }
+            _write_env(env)
+            # Initialize database with new engine
+            if db_type in ("mysql",):
+                sa_url = db_dsn.replace("mysql://", "mysql+pymysql://", 1)
+            elif db_type == "odbc":
+                sa_url = URL.create("mssql+pyodbc", query={"odbc_connect": db_dsn})
+            else:
+                sa_url = f"sqlite:///{db_dsn}" if not db_dsn.startswith("/") else f"sqlite://{db_dsn}"
+            new_engine = create_engine(sa_url, pool_pre_ping=True)
+            db._set_engine(new_engine)
+            db.init_db()
+            db.push_message("Configuration saved. Restarting...", "success")
+            self.respond_json({"ok": True})
+        except Exception as e:
+            print(f"[setup] Save error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            self.respond_json({"ok": False, "error": str(e)})
 
     def _handle_restart(self):
         self.respond("<html><body><h1>Restarting...</h1><script>setTimeout(function(){window.location.href='/'},3000)</script></body></html>")

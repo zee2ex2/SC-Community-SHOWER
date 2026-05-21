@@ -157,7 +157,7 @@ def setup_page():
     </div>
     <div id="db-odbc" style="display:none">
       <label>Connection String</label>
-      <input type="password" name="db_odbc" placeholder='Driver={ODBC Driver 18 for SQL Server};Server=tcp:...'>
+      <input type="text" name="db_odbc" placeholder='Driver={ODBC Driver 18 for SQL Server};Server=tcp:...'>
     </div>
     <div style="margin-top:12px">
       <button type="button" class="button blue" onclick="testConnection()">Test Connection</button>
