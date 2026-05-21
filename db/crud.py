@@ -640,41 +640,9 @@ def _close_all_connections():
 
 
 def _odbc_to_sa_url(dsn):
-    """Parse an ODBC connection string into a SQLAlchemy mssql+pyodbc URL."""
-    parts = {}
-    for match in re.finditer(r'([^=;]+)=([^;]*)', dsn):
-        key = match.group(1).strip()
-        val = match.group(2).strip()
-        if key.lower() in ("driver", "server", "database", "uid", "pwd", "port"):
-            parts[key.lower()] = val
-    driver = parts.get("driver", "").strip("{}")
-    server = parts.get("server", "")
-    if server.startswith("tcp:"):
-        server = server[4:]
-    # Extract port from server field (e.g. "host,1433")
-    port = None
-    if "," in server:
-        server, port_str = server.rsplit(",", 1)
-        port = int(port_str)
-    if not port:
-        port = int(parts.get("port", "1433"))
-    db = parts.get("database", "shower")
-    uid = parts.get("uid", "sa")
-    pwd = parts.get("pwd", "")
-    extra = {}
-    for match in re.finditer(r'([^=;]+)=([^;]*)', dsn):
-        k = match.group(1).strip()
-        v = match.group(2).strip()
-        if k.lower() not in ("driver", "server", "database", "uid", "pwd", "port", "") and k.strip("{}"):
-            extra[k] = v
-    query = {"driver": driver}
-    query.update(extra)
-    return URL.create(
-        "mssql+pyodbc",
-        username=uid, password=pwd,
-        host=server, port=port,
-        database=db, query=query,
-    )
+    """Return a SQLAlchemy URL that passes the raw ODBC string to pyodbc."""
+    import urllib.parse
+    return URL.create("mssql+pyodbc", query={"odbc_connect": dsn})
 
 
 def set_dsn(dsn):
