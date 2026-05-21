@@ -57,6 +57,8 @@ WS_PORT_STR = os.environ.get("WS_PORT", "")
 WS_PORT = int(WS_PORT_STR) if WS_PORT_STR else None
 BASE_DIR = Path(__file__).resolve().parent
 
+_jock_oauth_states = {}
+
 
 def _is_configured():
     if not ENV_PATH.exists():
