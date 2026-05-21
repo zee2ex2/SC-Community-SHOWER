@@ -25,7 +25,7 @@ import bot
 import db
 import render
 import ws_server
-from db import Q
+from db import Q  # noqa: F401 — kept for compat, Q always "?" with ORM
 from render import pop_messages, push_message, push_event, _event_queue, _event_cond
 
 HOST = os.environ.get("HOST", "0.0.0.0")
@@ -126,10 +126,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/db-status":
-            backend = "MySQL" if db._IS_MYSQL else "ODBC/SQL Server" if db._IS_ODBC else "SQLite"
+            url = str(db.engine.url)
             self.respond(f"""<html><body><h1>Database Status</h1>
-<pre>Backend: {backend}
-DSN: {db._DSN}
+<pre>Engine: {url}
+Tables: {len(db.Base.metadata.tables)} defined
 </pre><p><a href="/">Home</a></p></body></html>""")
             return
 
@@ -367,14 +367,11 @@ DSN: {db._DSN}
                 self.respond_json({"error": "Missing item_name"}, HTTPStatus.BAD_REQUEST)
                 return
             discord_id = user["discord_id"]
-            row = db.get_db().execute(
-                f"SELECT id FROM community_inventory WHERE discord_id={Q} AND item_name={Q} AND quality={Q} AND station={Q}",
-                (discord_id, item_name, quality, station)
-            ).fetchone()
-            if not row:
+            inv = db.get_inventory_by_content(discord_id, item_name, quality, station)
+            if not inv:
                 self.respond_json({"error": "No matching inventory found"}, HTTPStatus.NOT_FOUND)
                 return
-            api_lib.delete_inventory(user, row["id"])
+            api_lib.delete_inventory(user, inv.id)
             self.respond_json({"status": "ok"})
             return
 
@@ -630,8 +627,7 @@ DSN: {db._DSN}
             return
         user = db.get_user_by_session(sid.value)
         if user:
-            db.get_db().execute(f"DELETE FROM client_tokens WHERE discord_id={Q}", (user["discord_id"],))
-            db.get_db().commit()
+            db.clear_user_token(user["discord_id"])
             ws_server.close(user["discord_id"])
         db.delete_session(sid.value)
         self.send_response(HTTPStatus.SEE_OTHER)
@@ -719,15 +715,15 @@ DSN: {db._DSN}
             if not target_id or not role_id:
                 self.redirect("/admin?error=missing_fields")
                 return
-            target = db.get_db().execute(f"SELECT * FROM users WHERE discord_id={Q}", (target_id,)).fetchone()
+            target = db.get_user(data.get("discord_id", ""))
             if not target:
                 self.redirect("/admin?error=user_not_found")
                 return
-            target_level = db.get_user_role_level(target_id)
+            target_level = db.get_user_role_level(data.get("discord_id", ""))
             if level < 3 and target_level >= 2:
                 self.redirect("/admin?error=cannot_modify_mod_admin")
                 return
-            db.set_user_role(target_id, role_id)
+            db.set_user_role(data.get("discord_id", ""), data.get("role_id", ""))
             self.redirect("/admin?saved=1")
 
         elif action == "set_user_banned":
@@ -738,6 +734,10 @@ DSN: {db._DSN}
             banned = data.get("banned", "0") == "1"
             if not target_id:
                 self.redirect("/admin?error=missing_id")
+                return
+            target = db.get_user(target_id)
+            if not target:
+                self.redirect("/admin?error=user_not_found")
                 return
             target_level = db.get_user_role_level(target_id)
             if level < 3 and target_level >= 2:
@@ -780,17 +780,18 @@ DSN: {db._DSN}
             if not name:
                 self.redirect("/admin?error=missing_name")
                 return
+            session = db.get_session()
             if item_id:
-                existing = db.get_db().execute(f"SELECT id FROM items WHERE id={Q} OR name={Q}", (item_id, name)).fetchone()
+                existing = session.query(db.Item).filter(
+                    (db.Item.id == int(item_id)) | (db.Item.name == name)
+                ).first()
                 if existing:
                     self.redirect("/admin?error=id_or_name_taken")
                     return
-                db.get_db().execute(f"INSERT INTO items (id, name, hasquality, code, catid) VALUES ({Q}, {Q}, {Q}, {Q}, {Q})",
-                                    (int(item_id), name, hasquality, code, catid))
+            if item_id:
+                db.add_custom_item(name, item_id=int(item_id), hasquality=hasquality, code=code, catid=catid)
             else:
-                db.get_db().execute(f"INSERT INTO items (name, hasquality, code, catid) VALUES ({Q}, {Q}, {Q}, {Q})",
-                                    (name, hasquality, code, catid))
-            db.get_db().commit()
+                db.add_custom_item(name, hasquality=hasquality, code=code, catid=catid)
             self.redirect("/admin?saved=1")
 
         elif action == "delete_item":
@@ -813,12 +814,15 @@ DSN: {db._DSN}
             if not name or not station_id:
                 self.redirect("/admin?error=missing_fields")
                 return
-            existing = db.get_db().execute(f"SELECT id FROM stations WHERE id={Q} OR name={Q}", (station_id, name)).fetchone()
+            session = db.get_session()
+            existing = session.query(db.Station).filter(
+                (db.Station.id == int(station_id)) | (db.Station.name == name)
+            ).first()
             if existing:
                 self.redirect("/admin?error=id_or_name_taken")
                 return
-            db.get_db().execute(f"INSERT INTO stations (id, name) VALUES ({Q}, {Q})", (int(station_id), name))
-            db.get_db().commit()
+            session.add(db.Station(id=int(station_id), name=name))
+            session.commit()
             self.redirect("/admin?saved=1")
 
         elif action == "delete_station":

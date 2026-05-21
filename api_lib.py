@@ -6,7 +6,6 @@ All inventory operations trigger the same events as webapp actions
 
 import db
 import ws_server
-from db import Q
 
 
 def add_inventory(user, item_name, quality, quantity_scu, station):
@@ -55,17 +54,16 @@ def get_inventory(user, limit=None):
 
 
 def _push_to_pits(user, action, item_name, quality, quantity_scu, station):
-    """Resolve names to IDs and push inventory change to JOCKstrap."""
     itemid = ""
     stationid = ""
     if item_name:
-        row = db.get_db().execute(f"SELECT id FROM items WHERE name={Q}", (item_name,)).fetchone()
-        if row:
-            itemid = str(row["id"])
+        item = db.get_session().query(db.Item).filter_by(name=item_name).first()
+        if item:
+            itemid = str(item.id)
     if station:
-        row = db.get_db().execute(f"SELECT id FROM stations WHERE name={Q}", (station,)).fetchone()
-        if row:
-            stationid = str(row["id"])
+        station_obj = db.get_session().query(db.Station).filter_by(name=station).first()
+        if station_obj:
+            stationid = str(station_obj.id)
     msg = {
         "type": "push_inventory", "action": action,
         "itemid": itemid, "item_name": item_name,

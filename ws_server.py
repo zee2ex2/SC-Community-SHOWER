@@ -5,7 +5,6 @@ import time
 import websockets
 
 import db
-from db import Q
 
 MIN_JOCK_VERSION = "1.2.0"
 UPDATE_URL = "https://github.com/zee2ex2/SC-PITS-JOCKstrap-Extension/releases"
@@ -128,11 +127,8 @@ def handle_connection(sock, headers, client_addr):
                     if discord_id:
                         with _connections_lock:
                             _connections[discord_id] = sock
-                        user = db.get_db().execute(
-                            f"SELECT discord_id, discord_tag, username, display_name FROM users WHERE discord_id={Q}",
-                            (discord_id,)
-                        ).fetchone()
-                        info = dict(user) if user else {}
+                        user = db.get_session().query(db.User).filter_by(discord_id=discord_id).first()
+                        info = {k: getattr(user, k) for k in ("discord_id", "discord_tag", "username", "display_name")} if user else {}
                         info["server_schema_version"] = db.get_schema_version()
                         _send_ws(sock, json.dumps({"type": "auth_ok", "user": info}))
                         print(f"[ws] Client auth_code: {discord_id}", flush=True)
@@ -145,9 +141,9 @@ def handle_connection(sock, headers, client_addr):
                     item_name = data.get("item_name", "")
                     itemid = data.get("itemid", "")
                     if itemid:
-                        row = db.get_db().execute(f"SELECT name FROM items WHERE id={Q}", (int(itemid),)).fetchone()
-                        if row:
-                            item_name = row["name"]
+                        item = db.get_session().query(db.Item).filter_by(id=int(itemid)).first()
+                        if item:
+                            item_name = item.name
                     if not item_name:
                         continue
                     quality = int(data.get("quality", 100))
@@ -155,19 +151,16 @@ def handle_connection(sock, headers, client_addr):
                     station = data.get("station", "")
                     stationid = data.get("stationid", "")
                     if stationid:
-                        row = db.get_db().execute(f"SELECT name FROM stations WHERE id={Q}", (int(stationid),)).fetchone()
-                        if row:
-                            station = row["name"]
+                        station_obj = db.get_session().query(db.Station).filter_by(id=int(stationid)).first()
+                        if station_obj:
+                            station = station_obj.name
                     if action == "add":
                         db.sync_inventory(discord_id, item_name, quality, quantity_scu, station)
                         db.log_sync(discord_id, "push", "ok", f"WS synced {item_name}")
                     elif action == "delete":
-                        row = db.get_db().execute(
-                            f"SELECT id FROM community_inventory WHERE discord_id={Q} AND item_name={Q} AND quality={Q} AND station={Q}",
-                            (discord_id, item_name, quality, station)
-                        ).fetchone()
-                        if row:
-                            db.delete_inventory_item(discord_id, row["id"])
+                        inv = db.get_inventory_by_content(discord_id, item_name, quality, station)
+                        if inv:
+                            db.delete_inventory_item(discord_id, inv.id)
                             db.log_sync(discord_id, "push", "ok", f"WS deleted {item_name}")
                 elif msg_type == "ping":
                     _send_ws(sock, json.dumps({"type": "pong"}))
@@ -261,11 +254,8 @@ async def _handler(websocket):
                 if discord_id:
                     with _connections_lock:
                         _connections[discord_id] = websocket
-                    user = db.get_db().execute(
-                        f"SELECT discord_id, discord_tag, username, display_name FROM users WHERE discord_id={Q}",
-                        (discord_id,)
-                    ).fetchone()
-                    info = dict(user) if user else {}
+                    user = db.get_session().query(db.User).filter_by(discord_id=discord_id).first()
+                    info = {k: getattr(user, k) for k in ("discord_id", "discord_tag", "username", "display_name")} if user else {}
                     info["server_schema_version"] = db.get_schema_version()
                     await websocket.send(json.dumps({"type": "auth_ok", "user": info}))
                     print(f"[ws] Client auth_code: {discord_id}", flush=True)
@@ -278,8 +268,8 @@ async def _handler(websocket):
                 itemid = data.get("itemid", "")
                 item_name = data.get("item_name", "")
                 if not item_name and itemid:
-                    row = db.get_db().execute(f"SELECT name FROM items WHERE id={Q}", (int(itemid),)).fetchone()
-                    item_name = row["name"] if row else ""
+                    item = db.get_session().query(db.Item).filter_by(id=int(itemid)).first()
+                    item_name = item.name if item else ""
                 if not item_name:
                     continue
                 quality = int(data.get("quality", 100))
@@ -287,18 +277,15 @@ async def _handler(websocket):
                 station = data.get("station", "")
                 stationid = data.get("stationid", "")
                 if not station and stationid:
-                    row = db.get_db().execute(f"SELECT name FROM stations WHERE id={Q}", (int(stationid),)).fetchone()
-                    station = row["name"] if row else ""
+                    station_obj = db.get_session().query(db.Station).filter_by(id=int(stationid)).first()
+                    station = station_obj.name if station_obj else ""
                 if action == "add":
                     db.sync_inventory(discord_id, item_name, quality, quantity_scu, station)
                     db.log_sync(discord_id, "push", "ok", f"WS synced {item_name}")
                 elif action == "delete":
-                    row = db.get_db().execute(
-                        "SELECT id FROM community_inventory WHERE discord_id=? AND item_name=? AND quality=? AND station=?",
-                        (discord_id, item_name, quality, station)
-                    ).fetchone()
-                    if row:
-                        db.delete_inventory_item(discord_id, row["id"])
+                    inv = db.get_inventory_by_content(discord_id, item_name, quality, station)
+                    if inv:
+                        db.delete_inventory_item(discord_id, inv.id)
                         db.log_sync(discord_id, "push", "ok", f"WS deleted {item_name}")
 
             elif msg_type == "ping":
