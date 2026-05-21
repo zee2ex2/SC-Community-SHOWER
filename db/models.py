@@ -34,6 +34,10 @@ class User(Base):
     api_keys: Mapped[list["ApiKey"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     client_tokens: Mapped[list["ClientToken"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
+    @property
+    def role_level(self):
+        return self.role.level if self.role else 1
+
 
 class Session(Base):
     __tablename__ = "sessions"
