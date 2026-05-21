@@ -1,7 +1,9 @@
+import re
 import secrets
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, or_, text
+from sqlalchemy.engine import URL
 
 from .engine import get_session, write_db, SessionLocal, engine as _engine, _local_tx
 from .models import (
@@ -637,18 +639,55 @@ def _close_all_connections():
     engine.dispose()
 
 
+def _odbc_to_sa_url(dsn):
+    """Parse an ODBC connection string into a SQLAlchemy mssql+pyodbc URL."""
+    parts = {}
+    for match in re.finditer(r'([^=;]+)=([^;]*)', dsn):
+        key = match.group(1).strip()
+        val = match.group(2).strip()
+        if key.lower() in ("driver", "server", "database", "uid", "pwd", "port"):
+            parts[key.lower()] = val
+    driver = parts.get("driver", "").strip("{}").replace(" ", "+")
+    server = parts.get("server", "")
+    if server.startswith("tcp:"):
+        server = server[4:]
+    # Extract port from server field (e.g. "host,1433")
+    port = None
+    if "," in server:
+        server, port_str = server.rsplit(",", 1)
+        port = int(port_str)
+    if not port:
+        port = int(parts.get("port", "1433"))
+    db = parts.get("database", "shower")
+    uid = parts.get("uid", "sa")
+    pwd = parts.get("pwd", "")
+    extra = {}
+    for match in re.finditer(r'([^=;]+)=([^;]*)', dsn):
+        k = match.group(1).strip()
+        v = match.group(2).strip()
+        if k.lower() not in ("driver", "server", "database", "uid", "pwd", "port", "") and k.strip("{}"):
+            extra[k] = v
+    query = {"driver": driver}
+    query.update(extra)
+    return URL.create(
+        "mssql+pyodbc",
+        username=uid, password=pwd,
+        host=server, port=port,
+        database=db, query=query,
+    )
+
+
 def set_dsn(dsn):
     from sqlalchemy import create_engine
     if dsn.startswith("mysql://"):
         url = dsn.replace("mysql://", "mysql+pymysql://", 1)
     elif "Driver=" in dsn:
-        url = dsn
-    else:
-        url = f"sqlite:///{dsn}"
-    if "Driver=" in url:
+        url = _odbc_to_sa_url(dsn)
         import pyodbc
         test = pyodbc.connect(dsn, autocommit=False, timeout=10)
         test.close()
+    else:
+        url = f"sqlite:///{dsn}"
     new_engine = create_engine(url, pool_pre_ping=True)
     with new_engine.connect() as conn:
         conn.execute(text("SELECT 1"))

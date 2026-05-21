@@ -12,6 +12,34 @@ _DSN = os.environ.get("SHOWER_DB", str(Path(__file__).resolve().parent.parent / 
 def _sa_url():
     if _DSN.startswith("mysql://"):
         return _DSN.replace("mysql://", "mysql+pymysql://", 1)
+    if "Driver=" in _DSN:
+        from sqlalchemy.engine import URL
+        import re
+        parts = {}
+        for m in re.finditer(r'([^=;]+)=([^;]*)', _DSN):
+            k = m.group(1).strip().lower()
+            v = m.group(2).strip()
+            if k in ("driver", "server", "database", "uid", "pwd", "port"):
+                parts[k] = v
+        driver = parts.get("driver", "").strip("{}").replace(" ", "+")
+        server = parts.get("server", "").lstrip("tcp:")
+        port = None
+        if "," in server:
+            server, port_str = server.rsplit(",", 1)
+            port = int(port_str)
+        if not port:
+            port = int(parts.get("port", 1433))
+        extra = {}
+        for m in re.finditer(r'([^=;]+)=([^;]*)', _DSN):
+            k = m.group(1).strip()
+            v = m.group(2).strip()
+            if k.lower() not in ("driver", "server", "database", "uid", "pwd", "port", ""):
+                extra[k] = v
+        query = {"driver": driver, **extra}
+        return URL.create("mssql+pyodbc", username=parts.get("uid", "sa"),
+                          password=parts.get("pwd", ""), host=server,
+                          port=port, database=parts.get("database", "shower"),
+                          query=query)
     return f"sqlite:///{_DSN}"
 
 
