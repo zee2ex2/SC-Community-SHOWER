@@ -426,12 +426,22 @@ def _notify_all(title, body, source="system"):
 
 def get_notifications(discord_id, limit=None):
     session = get_session()
-    q = session.query(Notification).filter_by(discord_id=discord_id).order_by(
-        Notification.created_at.desc()
-    )
-    if limit:
-        q = q.limit(limit)
-    return q.all()
+    try:
+        q = session.query(Notification).filter_by(discord_id=discord_id).order_by(
+            Notification.created_at.desc()
+        )
+        if limit:
+            q = q.limit(limit)
+        return q.all()
+    except Exception as e:
+        from .engine import engine
+        from sqlalchemy import inspect
+        try:
+            tables = inspect(engine).get_table_names()
+            print(f"[db] get_notifications error, existing tables: {tables}", flush=True)
+        except Exception:
+            pass
+        raise
 
 
 def get_pending_dm_notifications(limit=20):
