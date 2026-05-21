@@ -647,7 +647,7 @@ def _odbc_to_sa_url(dsn):
         val = match.group(2).strip()
         if key.lower() in ("driver", "server", "database", "uid", "pwd", "port"):
             parts[key.lower()] = val
-    driver = parts.get("driver", "").strip("{}").replace(" ", "+")
+    driver = parts.get("driver", "").strip("{}")
     server = parts.get("server", "")
     if server.startswith("tcp:"):
         server = server[4:]

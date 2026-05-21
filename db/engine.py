@@ -21,7 +21,7 @@ def _sa_url():
             v = m.group(2).strip()
             if k in ("driver", "server", "database", "uid", "pwd", "port"):
                 parts[k] = v
-        driver = parts.get("driver", "").strip("{}").replace(" ", "+")
+        driver = parts.get("driver", "").strip("{}")
         server = parts.get("server", "").lstrip("tcp:")
         port = None
         if "," in server:
