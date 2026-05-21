@@ -22,7 +22,8 @@ def ensure_user(discord_id):
 
 
 def get_user(discord_id):
-    return get_session().query(User).filter_by(discord_id=discord_id).first()
+    from sqlalchemy.orm import joinedload
+    return get_session().query(User).options(joinedload(User.role)).filter_by(discord_id=discord_id).first()
 
 
 @write_db
@@ -115,8 +116,9 @@ def revoke_api_key(key, discord_id):
 
 
 def get_user_by_api_key(key):
+    from sqlalchemy.orm import joinedload
     session = get_session()
-    user = session.query(User).join(ApiKey).filter(
+    user = session.query(User).options(joinedload(User.role)).join(ApiKey).filter(
         ApiKey.key == key,
         or_(ApiKey.expires_at.is_(None), ApiKey.expires_at > func.now()),
     ).first()
@@ -142,8 +144,8 @@ def create_client_token(discord_id, expires_in_days=30):
 
 
 def get_user_by_client_token(token):
-    session = get_session()
-    return session.query(User).join(ClientToken).filter(
+    from sqlalchemy.orm import joinedload
+    return get_session().query(User).options(joinedload(User.role)).join(ClientToken).filter(
         ClientToken.token == token,
         ClientToken.expires_at > func.now(),
     ).first()
