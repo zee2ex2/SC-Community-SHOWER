@@ -75,6 +75,9 @@ def get_db():
     return _local.conn
 
 def _put_db(conn):
+    # Don't close connections owned by an active transaction
+    if hasattr(_local_tx, "conn") and _local_tx.conn is conn:
+        return
     if _IS_MYSQL:
         _pool.put(conn)
     elif _IS_ODBC:
