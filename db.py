@@ -158,7 +158,7 @@ def _cols(table):
     if _IS_MYSQL:
         return [r["Field"] for r in data]
     if _IS_ODBC:
-        names = [r[0] for r in data]
+        names = [r["name"] for r in data]
         print(f"[db] _cols({table}): {names}", flush=True)
         return names
     return [r[1] for r in data]
