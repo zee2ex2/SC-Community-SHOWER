@@ -9,6 +9,7 @@ _DSN = os.environ.get("SHOWER_DB", str(Path(__file__).resolve().parent / "shower
 _IS_MYSQL = _DSN.startswith("mysql://")
 _IS_ODBC = not _IS_MYSQL and ("Driver=" in _DSN or "driver=" in _DSN)
 _local = threading.local()
+_local_tx = threading.local()
 _write_lock = threading.RLock()
 
 # Connection pools (lazy-initialized)
@@ -54,6 +55,9 @@ def _new_conn():
             raise
 
 def get_db():
+    # If inside a write_db transaction, return that connection
+    if hasattr(_local_tx, "conn") and _local_tx.conn is not None:
+        return _local_tx.conn
     if _IS_MYSQL:
         try:
             return _pool.get_nowait()
@@ -118,6 +122,7 @@ SCHEMA_VERSION = 3
 def write_db(func):
     def wrapper(*args, **kwargs):
         db = get_db()
+        _local_tx.conn = db
         try:
             result = func(*args, **kwargs)
             db.commit()
@@ -126,6 +131,7 @@ def write_db(func):
             db.rollback()
             raise
         finally:
+            _local_tx.conn = None
             _put_db(db)
     return wrapper
 
