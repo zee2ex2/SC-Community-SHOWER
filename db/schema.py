@@ -10,6 +10,9 @@ SCHEMA_VERSION = 3
 def init_db():
     try:
         Base.metadata.create_all(engine)
+        # Force commit DDL for backends with autocommit=False (ODBC)
+        with engine.connect() as conn:
+            conn.commit()
     except Exception as e:
         print(f"[db] create_all error: {e}", flush=True)
     # Verify tables were created
